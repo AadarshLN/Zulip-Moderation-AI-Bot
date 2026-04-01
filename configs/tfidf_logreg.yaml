@@ -1,0 +1,29 @@
+experiment:
+  name: chat_sentry_training
+  run_name: tfidf_logreg_baseline
+
+mlflow:
+  tracking_uri: http://<MLFLOW_IP>:5000
+
+data:
+  train_path: /workspace/data/processed/train.csv
+  val_path: /workspace/data/processed/val.csv
+  test_path: /workspace/data/processed/test.csv
+  max_length: 128
+
+model:
+  type: tfidf_logreg
+
+baseline:
+  max_features: 50000
+  ngram_range: [1, 2]
+  c: 1.0
+  max_iter: 1000
+
+training: {}
+
+evaluation:
+  threshold_tuning: false
+
+output:
+  dir: /workspace/outputs/tfidf_logreg

@@ -1,0 +1,7 @@
+data/*
+!data/.gitkeep
+
+mlruns/
+__pycache__/
+*.pt
+*.bin
