@@ -18,6 +18,34 @@ from src.data import MultiTaskTextDataset, load_splits
 from src.metrics import compute_multitask_metrics, flatten_metrics, save_json
 from src.models import TfidfLogRegMultiOutput, TransformerMultiHeadModel
 
+def deep_update(base: dict, updates: dict):
+    result = dict(base)
+    for k, v in updates.items():
+        if isinstance(v, dict) and isinstance(result.get(k), dict):
+            result[k] = deep_update(result[k], v)
+        else:
+            result[k] = v
+    return result
+
+
+def resolve_run_config(full_cfg: dict, run_name: str):
+    if "runs" not in full_cfg:
+        raise ValueError("Config must contain a top-level 'runs' section")
+
+    if run_name not in full_cfg["runs"]:
+        raise ValueError(f"Run '{run_name}' not found in config. Available: {list(full_cfg['runs'].keys())}")
+
+    base_cfg = {k: v for k, v in full_cfg.items() if k != "runs"}
+    run_overrides = full_cfg["runs"][run_name]
+
+    cfg = deep_update(base_cfg, run_overrides)
+
+    if "experiment" not in cfg:
+        cfg["experiment"] = {}
+    cfg["experiment"]["run_name"] = run_name
+
+    return cfg
+
 
 def load_config(path: str):
     with open(path, "r") as f:
@@ -264,14 +292,20 @@ def run_transformer(cfg):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True)
+    parser.add_argument("--run", type=str, required=True)
     args = parser.parse_args()
 
-    cfg = load_config(args.config)
+    full_cfg = load_config(args.config)
+    cfg = resolve_run_config(full_cfg, args.run)
 
-    mlflow.set_tracking_uri(cfg["mlflow"]["tracking_uri"])
+
+    tracking_uri = os.getenv("MLFLOW_TRACKING_URI", cfg["mlflow"]["tracking_uri"])
+    mlflow.set_tracking_uri(tracking_uri)
     mlflow.set_experiment(cfg["experiment"]["name"])
+    
 
     with mlflow.start_run(run_name=cfg["experiment"]["run_name"]):
+        mlflow.log_param("selected_run", args.run)
         mlflow.log_artifact(args.config)
 
         for k, v in collect_env_info().items():
@@ -300,7 +334,7 @@ def main():
         mlflow.log_metric("train_time_sec", train_time)
         mlflow.log_metrics({f"val_{k}": v for k, v in flatten_metrics(val_metrics).items()})
         mlflow.log_metrics({f"test_{k}": v for k, v in flatten_metrics(test_metrics).items()})
-
+        Path(cfg["output"]["dir"]).mkdir(parents=True, exist_ok=True)
         thresholds_path = Path(cfg["output"]["dir"]) / "thresholds.json"
         metrics_path = Path(cfg["output"]["dir"]) / "final_metrics.json"
         save_json(thresholds, thresholds_path)
