@@ -9,14 +9,16 @@ import mlflow.pytorch
 import mlflow.sklearn
 import numpy as np
 import torch
+import torch.multiprocessing as mp
 import yaml
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import AutoTokenizer, get_linear_schedule_with_warmup
-
 from src.data import MultiTaskTextDataset, load_splits
 from src.metrics import compute_multitask_metrics, flatten_metrics, save_json
 from src.models import TfidfLogRegMultiOutput, TransformerMultiHeadModel
+
+mp.set_sharing_strategy("file_system")
 
 def deep_update(base: dict, updates: dict):
     result = dict(base)

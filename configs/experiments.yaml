@@ -1,5 +1,5 @@
 experiment:
-  name: zulip_moderation_bot_training
+  name: zulip_moderation_bot_training_v2
 
 mlflow:
   tracking_uri: http://<MLFLOW_IP>:5000
@@ -22,7 +22,7 @@ training:
   lr: 0.00002
   weight_decay: 0.01
   warmup_ratio: 0.1
-  num_workers: 1
+  num_workers: 0
   weighted_bce: false
 
 evaluation:
