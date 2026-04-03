@@ -19,10 +19,10 @@ baseline:
 training:
   batch_size: 16
   epochs: 3
-  lr: 2e-5
+  lr: 0.00002
   weight_decay: 0.01
   warmup_ratio: 0.1
-  num_workers: 2
+  num_workers: 1
   weighted_bce: false
 
 evaluation:
@@ -40,6 +40,7 @@ runs:
   tfidf_logreg:
     model:
       type: tfidf_logreg
+      encoder_name: null
     output:
       dir: /workspace/outputs/tfidf_logreg
 
