@@ -55,10 +55,24 @@ def load_config(path: str):
 
 
 def get_git_sha():
-    try:
-        return subprocess.check_output(["git", "rev-parse", "HEAD"]).decode().strip()
-    except Exception:
-        return "unknown"
+    env_sha = os.getenv("GIT_SHA")
+    if env_sha:
+      return env_sha
+
+    candidate_paths = [
+    Path.cwd(),
+    Path(__file__).resolve().parents[1],
+    Path("/home/cc/Zulip-Moderation-AI-Bot"),
+    ]
+    for path in candidate_paths:
+        try:
+          print("Trying sha")
+          sha = subprocess.check_output(["git", "-C", str(path), "rev-parse", "HEAD"],stderr=subprocess.STDOUT,).decode().strip()
+          print(f"Resolved sha : {sha}")
+          return sha
+        except Exception as e:
+          print(f"Git SHA lookup failed for {path}: {e}")
+          return "unknown"
 
 
 def get_device():
@@ -304,11 +318,15 @@ def main():
     tracking_uri = os.getenv("MLFLOW_TRACKING_URI", cfg["mlflow"]["tracking_uri"])
     mlflow.set_tracking_uri(tracking_uri)
     mlflow.set_experiment(cfg["experiment"]["name"])
-    
-
+    mlflow.enable_system_metrics_logging()
     with mlflow.start_run(run_name=cfg["experiment"]["run_name"]):
         mlflow.log_param("selected_run", args.run)
         mlflow.log_artifact(args.config)
+
+        print("CWD:", Path.cwd())
+        print("__file__:", Path(__file__).resolve())
+        print("Repo guess:", Path(__file__).resolve().parents[1])
+
 
         for k, v in collect_env_info().items():
             mlflow.log_param(k, v)
