@@ -1,0 +1,108 @@
+---
+# pre_k8s.yml — Run BEFORE installing k3s
+# Disables firewall, creates local storage directory, sets kernel params.
+#
+# Usage:
+#   export ANSIBLE_HOST=$(terraform -chdir=../terraform output -raw floating_ip_out)
+#   ansible-playbook -i inventory.yml pre_k8s.yml --vault-password-file ~/.vault_pass
+
+- name: Pre-k3s VM configuration
+  hosts: all
+  become: true
+  gather_facts: true
+
+  tasks:
+
+    # ── Firewall ────────────────────────────────────────────────────────────
+
+    - name: Disable and mask firewalld
+      ansible.builtin.systemd:
+        name: firewalld
+        state: stopped
+        enabled: false
+        masked: true
+      ignore_errors: true  # not installed on Ubuntu
+
+    - name: Disable ufw if present
+      ansible.builtin.systemd:
+        name: ufw
+        state: stopped
+        enabled: false
+      ignore_errors: true
+
+    # ── System packages ─────────────────────────────────────────────────────
+
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Install required system packages
+      ansible.builtin.apt:
+        name:
+          - git
+          - curl
+          - wget
+          - open-iscsi
+          - nfs-common
+          - python3-pip
+          - python3-openstackclient
+          - jq
+        state: present
+
+    # ── Kernel parameters ───────────────────────────────────────────────────
+
+    - name: Enable IP forwarding
+      ansible.posix.sysctl:
+        name: net.ipv4.ip_forward
+        value: "1"
+        state: present
+        reload: true
+
+    - name: Enable bridge netfilter (loaded by k3s on start, ignore if not yet available)
+      ansible.posix.sysctl:
+        name: net.bridge.bridge-nf-call-iptables
+        value: "1"
+        state: present
+        reload: true
+      ignore_errors: true
+
+    # ── Local storage directory ─────────────────────────────────────────────
+    # Chameleon TACC KVM does not provide Cinder block storage.
+    # k3s local-path provisioner uses the root disk instead.
+    # MLflow artifacts and Zulip uploads are stored in Chameleon Object Store.
+
+    - name: Create local-path provisioner data directory on root disk
+      ansible.builtin.file:
+        path: "{{ local_path_data_dir }}"
+        state: directory
+        mode: "0777"
+
+    - name: Show available disk space
+      ansible.builtin.command: df -h /
+      register: df_out
+      changed_when: false
+
+    - name: Print disk info
+      ansible.builtin.debug:
+        msg: "{{ df_out.stdout }}"
+
+    # ── OpenStack CLI config ─────────────────────────────────────────────────
+    # Copies the local clouds.yaml to the VM so Ansible can create object store
+    # containers from the VM in post_k8s.yml.
+
+    - name: Create OpenStack config directory on VM
+      ansible.builtin.file:
+        path: /home/cc/.config/openstack
+        state: directory
+        owner: cc
+        group: cc
+        mode: "0700"
+
+    - name: Copy clouds.yaml to VM
+      ansible.builtin.copy:
+        src: "{{ lookup('env', 'HOME') }}/.config/openstack/clouds.yaml"
+        dest: /home/cc/.config/openstack/clouds.yaml
+        owner: cc
+        group: cc
+        mode: "0600"

@@ -1,0 +1,12 @@
+all:
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+    ansible_user: cc
+    ansible_ssh_private_key_file: ~/.ssh/id_rsa_chameleon
+    ansible_ssh_common_args: "-o StrictHostKeyChecking=no"
+  hosts:
+    zulip-node:
+      # Set this from terraform output before running Ansible:
+      #   export ANSIBLE_HOST=$(terraform -chdir=../terraform output -raw floating_ip_out)
+      # Then reference it here, or replace with the actual IP after terraform apply.
+      ansible_host: "{{ lookup('env', 'ANSIBLE_HOST') }}"

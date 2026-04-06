@@ -1,0 +1,169 @@
+---
+# install_k3s.yml — Installs k3s, NVIDIA support, and nginx-ingress
+#
+# Usage:
+#   ansible-playbook -i inventory.yml install_k3s.yml --vault-password-file ~/.vault_pass
+
+- name: Install k3s and configure Kubernetes
+  hosts: all
+  become: true
+  gather_facts: true
+
+  tasks:
+
+    # ── k3s ─────────────────────────────────────────────────────────────────
+
+    - name: Download and install k3s
+      ansible.builtin.shell: |
+        curl -sfL https://get.k3s.io | \
+          INSTALL_K3S_VERSION="{{ k3s_version }}" \
+          INSTALL_K3S_EXEC="server --disable traefik --disable servicelb" \
+          sh -
+      args:
+        creates: /usr/local/bin/k3s  # idempotent: skip if already installed
+
+    - name: Wait for k3s API server to be ready
+      ansible.builtin.wait_for:
+        port: 6443
+        host: 127.0.0.1
+        timeout: 120
+
+    - name: Wait for node to be Ready
+      ansible.builtin.shell: k3s kubectl get nodes | grep -w Ready
+      register: node_ready
+      retries: 20
+      delay: 10
+      until: node_ready.rc == 0
+      changed_when: false
+
+    # ── kubeconfig for cc user ───────────────────────────────────────────────
+
+    - name: Create .kube directory for cc user
+      ansible.builtin.file:
+        path: /home/cc/.kube
+        state: directory
+        owner: cc
+        group: cc
+        mode: "0700"
+
+    - name: Copy k3s kubeconfig to cc user
+      ansible.builtin.copy:
+        src: /etc/rancher/k3s/k3s.yaml
+        dest: /home/cc/.kube/config
+        remote_src: true
+        owner: cc
+        group: cc
+        mode: "0600"
+
+    - name: Set KUBECONFIG in cc bashrc
+      ansible.builtin.lineinfile:
+        path: /home/cc/.bashrc
+        line: 'export KUBECONFIG=/home/cc/.kube/config'
+        create: true
+
+    # ── Redirect local-path provisioner to dedicated directory ──────────────
+
+    - name: Patch local-path-config to use /opt/local-path-provisioner
+      ansible.builtin.shell: |
+        kubectl patch configmap local-path-config -n kube-system --type merge \
+          -p '{"data":{"config.json":"{\"nodePathMap\":[{\"node\":\"DEFAULT_PATH_FOR_NON_LISTED_NODES\",\"paths\":[\"{{ local_path_data_dir }}\"]}]}"}}'
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      changed_when: true
+
+    # ── NVIDIA GPU support ───────────────────────────────────────────────────
+
+    - name: Install NVIDIA Container Toolkit repo key
+      ansible.builtin.shell: |
+        curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
+          gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+      args:
+        creates: /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+
+    - name: Add NVIDIA Container Toolkit apt repository
+      ansible.builtin.shell: |
+        distribution=$(. /etc/os-release; echo ${ID}${VERSION_ID})
+        curl -s -L https://nvidia.github.io/libnvidia-container/$distribution/libnvidia-container.list | \
+          sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
+          tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+      args:
+        creates: /etc/apt/sources.list.d/nvidia-container-toolkit.list
+
+    - name: Install nvidia-container-toolkit
+      ansible.builtin.apt:
+        name: nvidia-container-toolkit
+        state: present
+        update_cache: true
+
+    - name: Configure nvidia runtime for containerd (k3s uses containerd)
+      ansible.builtin.command: nvidia-ctk runtime configure --runtime=containerd
+      changed_when: true
+
+    - name: Restart k3s to pick up nvidia runtime
+      ansible.builtin.systemd:
+        name: k3s
+        state: restarted
+
+    - name: Wait for k3s to be ready again after restart
+      ansible.builtin.wait_for:
+        port: 6443
+        host: 127.0.0.1
+        timeout: 120
+
+    - name: Apply NVIDIA k8s-device-plugin DaemonSet
+      ansible.builtin.shell: |
+        kubectl apply -f \
+          https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/{{ nvidia_device_plugin_version }}/deployments/static/nvidia-device-plugin.yml
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      changed_when: true
+
+    # ── nginx-ingress controller ─────────────────────────────────────────────
+
+    - name: Deploy nginx-ingress controller
+      ansible.builtin.shell: |
+        kubectl apply -f \
+          https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-{{ nginx_ingress_version }}/deploy/static/provider/cloud/deploy.yaml
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      changed_when: true
+
+    - name: Wait for nginx-ingress controller pod to be Running
+      ansible.builtin.shell: |
+        kubectl wait --namespace ingress-nginx \
+          --for=condition=ready pod \
+          --selector=app.kubernetes.io/component=controller \
+          --timeout=180s
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      register: ingress_wait
+      retries: 3
+      delay: 10
+      until: ingress_wait.rc == 0
+      changed_when: false
+
+    - name: Patch nginx-ingress service to NodePort (Chameleon has no cloud LB)
+      ansible.builtin.shell: |
+        kubectl patch svc ingress-nginx-controller -n ingress-nginx \
+          --type='json' \
+          -p='[
+            {"op":"replace","path":"/spec/type","value":"NodePort"},
+            {"op":"replace","path":"/spec/ports/0/nodePort","value":30080},
+            {"op":"replace","path":"/spec/ports/1/nodePort","value":30443}
+          ]'
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      changed_when: true
+
+    # ── Summary ──────────────────────────────────────────────────────────────
+
+    - name: Show cluster status
+      ansible.builtin.shell: kubectl get nodes -o wide && kubectl get pods -A
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      register: cluster_status
+      changed_when: false
+
+    - name: Print cluster status
+      ansible.builtin.debug:
+        msg: "{{ cluster_status.stdout_lines }}"
