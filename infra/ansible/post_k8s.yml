@@ -70,6 +70,12 @@
         regexp: "S3_ENDPOINT_PLACEHOLDER"
         replace: "{{ chameleon_s3_endpoint }}"
 
+    - name: Replace S3_ENDPOINT_PLACEHOLDER in training job manifest
+      ansible.builtin.replace:
+        path: "{{ manifest_dest }}/platform/training-job.yaml"
+        regexp: "S3_ENDPOINT_PLACEHOLDER"
+        replace: "{{ chameleon_s3_endpoint }}"
+
     # ── Namespaces ───────────────────────────────────────────────────────────
 
     - name: Apply namespaces
@@ -204,6 +210,14 @@
 
     - name: Apply Ingress rules
       ansible.builtin.shell: kubectl apply -f {{ manifest_dest }}/platform/ingress.yaml
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      changed_when: true
+
+    - name: Apply training job ConfigMap and PVC (Job itself is triggered manually)
+      ansible.builtin.shell: |
+        kubectl apply -f {{ manifest_dest }}/platform/training-job.yaml \
+          --selector='!batch.kubernetes.io/job-name'
       environment:
         KUBECONFIG: "{{ kubeconfig }}"
       changed_when: true
