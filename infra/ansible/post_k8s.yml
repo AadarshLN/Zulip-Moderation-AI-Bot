@@ -22,7 +22,6 @@
       ansible.builtin.shell: |
         openstack container create {{ item }} 2>&1 || true
       loop:
-        - "{{ os_mlflow_bucket }}"
         - "{{ os_zulip_uploads_bucket }}"
         - "{{ os_zulip_avatars_bucket }}"
       environment:
@@ -58,21 +57,9 @@
         regexp: "FLOATING_IP_PLACEHOLDER"
         replace: "{{ ansible_host }}"
 
-    - name: Replace S3_ENDPOINT_PLACEHOLDER in MLflow manifest
-      ansible.builtin.replace:
-        path: "{{ manifest_dest }}/platform/mlflow.yaml"
-        regexp: "S3_ENDPOINT_PLACEHOLDER"
-        replace: "{{ chameleon_s3_endpoint }}"
-
     - name: Replace S3_ENDPOINT_PLACEHOLDER in Zulip manifest
       ansible.builtin.replace:
         path: "{{ manifest_dest }}/zulip/zulip.yaml"
-        regexp: "S3_ENDPOINT_PLACEHOLDER"
-        replace: "{{ chameleon_s3_endpoint }}"
-
-    - name: Replace S3_ENDPOINT_PLACEHOLDER in training job manifest
-      ansible.builtin.replace:
-        path: "{{ manifest_dest }}/platform/training-job.yaml"
         regexp: "S3_ENDPOINT_PLACEHOLDER"
         replace: "{{ chameleon_s3_endpoint }}"
 
@@ -151,6 +138,18 @@
       no_log: true
       changed_when: true
 
+    - name: Create minio-credentials secret (namespace platform)
+      ansible.builtin.shell: |
+        kubectl create secret generic minio-credentials \
+          --namespace platform \
+          --from-literal=MINIO_ROOT_USER="{{ vault_minio_root_user }}" \
+          --from-literal=MINIO_ROOT_PASSWORD="{{ vault_minio_root_password }}" \
+          --dry-run=client -o yaml | kubectl apply -f -
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      no_log: true
+      changed_when: true
+
     # We also need the mlflow DB password available for the postgres init script
     - name: Create mlflow-db-credentials secret (namespace zulip, used by postgres initdb)
       ansible.builtin.shell: |
@@ -196,6 +195,19 @@
         KUBECONFIG: "{{ kubeconfig }}"
       changed_when: true
 
+    - name: Apply MinIO
+      ansible.builtin.shell: kubectl apply -f {{ manifest_dest }}/platform/minio.yaml
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      changed_when: true
+
+    - name: Wait for MinIO to be ready
+      ansible.builtin.shell: |
+        kubectl rollout status deployment/minio -n platform --timeout=120s
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      changed_when: false
+
     - name: Apply MLflow
       ansible.builtin.shell: kubectl apply -f {{ manifest_dest }}/platform/mlflow.yaml
       environment:
@@ -234,6 +246,13 @@
     - name: Wait for MLflow to be ready
       ansible.builtin.shell: |
         kubectl rollout status deployment/mlflow -n platform --timeout=180s
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      changed_when: false
+
+    - name: Wait for MinIO to be ready (post-deploy check)
+      ansible.builtin.shell: |
+        kubectl rollout status deployment/minio -n platform --timeout=120s
       environment:
         KUBECONFIG: "{{ kubeconfig }}"
       changed_when: false
@@ -284,5 +303,7 @@
     - name: Print access URLs
       ansible.builtin.debug:
         msg:
-          - "Zulip:  http://zulip.{{ ansible_host }}.nip.io"
-          - "MLflow: http://mlflow.{{ ansible_host }}.nip.io"
+          - "Zulip:    http://zulip.{{ ansible_host }}.nip.io"
+          - "MLflow:   http://mlflow.{{ ansible_host }}.nip.io"
+          - "MinIO:    http://minio.{{ ansible_host }}.nip.io  (login: vault_minio_root_user / vault_minio_root_password)"
+          - "RabbitMQ: http://rabbitmq.{{ ansible_host }}.nip.io  (login: zulip / vault_rabbitmq_password)"

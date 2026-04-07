@@ -28,7 +28,12 @@ vault_redis_password: "CHANGE_ME_redis_password"
 # MLflow PostgreSQL user password (separate user 'mlflow_user' in the shared postgres pod)
 vault_mlflow_db_password: "CHANGE_ME_mlflow_db_password"
 
+# MinIO credentials — used as the admin login for the MinIO console and by MLflow
+vault_minio_root_user: "CHANGE_ME_minio_admin_user"
+vault_minio_root_password: "CHANGE_ME_minio_strong_password"
+
 # Chameleon EC2 credentials for Object Store (Swift S3-compatible API)
+# Used by Zulip for file uploads and avatars.
 # Generate from Chameleon dashboard: Identity → EC2 Credentials → Create EC2 Credential
 # Or via CLI: openstack ec2 credentials create
 vault_chameleon_ec2_access: "CHANGE_ME_ec2_access_key"

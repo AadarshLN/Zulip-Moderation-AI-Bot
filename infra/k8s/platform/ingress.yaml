@@ -2,11 +2,10 @@
 # nip.io resolves <anything>.<IP>.nip.io → <IP>, so no DNS setup is needed.
 #
 # Access URLs (replace FLOATING_IP with your actual IP):
-#   Zulip:  http://zulip.FLOATING_IP.nip.io
-#   MLflow: http://mlflow.FLOATING_IP.nip.io
-#
-# The nginx-ingress controller is exposed via NodePort 30080 (HTTP).
-# Chameleon security group opens port 80 which maps to NodePort 30080.
+#   Zulip:    http://zulip.FLOATING_IP.nip.io
+#   MLflow:   http://mlflow.FLOATING_IP.nip.io
+#   MinIO:    http://minio.FLOATING_IP.nip.io      (web console)
+#   RabbitMQ: http://rabbitmq.FLOATING_IP.nip.io   (management UI, login: zulip / <vault_rabbitmq_password>)
 
 # ── Zulip (namespace: zulip) ──────────────────────────────────────────────────
 apiVersion: networking.k8s.io/v1
@@ -35,6 +34,28 @@ spec:
                 port:
                   number: 80
 ---
+# ── RabbitMQ management UI (namespace: zulip) ─────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: rabbitmq-ingress
+  namespace: zulip
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: "rabbitmq.FLOATING_IP_PLACEHOLDER.nip.io"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: rabbitmq
+                port:
+                  number: 15672
+---
 # ── MLflow (namespace: platform) ─────────────────────────────────────────────
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -57,3 +78,27 @@ spec:
                 name: mlflow
                 port:
                   number: 5000
+---
+# ── MinIO console (namespace: platform) ──────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: minio-ingress
+  namespace: platform
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: "minio.FLOATING_IP_PLACEHOLDER.nip.io"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: minio-console
+                port:
+                  number: 9001

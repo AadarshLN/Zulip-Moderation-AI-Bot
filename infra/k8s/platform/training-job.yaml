@@ -99,19 +99,10 @@ spec:
                   name: training-config
                   key: mlflow_experiment_name
 
-            # ── MLflow artifact storage (Chameleon Object Store) ─────────────
-            - name: AWS_ACCESS_KEY_ID
-              valueFrom:
-                secretKeyRef:
-                  name: mlflow-credentials
-                  key: AWS_ACCESS_KEY_ID
-            - name: AWS_SECRET_ACCESS_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: mlflow-credentials
-                  key: AWS_SECRET_ACCESS_KEY
-            - name: MLFLOW_S3_ENDPOINT_URL
-              value: "S3_ENDPOINT_PLACEHOLDER"
+            # ── MLflow artifact storage ───────────────────────────────────────
+            # Artifacts are logged via the MLflow tracking server (--serve-artifacts).
+            # The server proxies all artifact operations to MinIO — no S3 credentials
+            # or endpoint needed here. Set MLFLOW_TRACKING_URI and MLflow handles the rest.
 
             # ── CUDA visibility ───────────────────────────────────────────────
             - name: NVIDIA_VISIBLE_DEVICES
