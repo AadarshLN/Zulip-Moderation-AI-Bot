@@ -1,0 +1,23 @@
+all:
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+    ansible_user: cc
+    ansible_ssh_private_key_file: ~/.ssh/id_rsa_chameleon
+    ansible_ssh_common_args: "-o StrictHostKeyChecking=no"
+
+  children:
+    # k3s control plane + worker — KVM@TACC app node (all services run here)
+    # Set APP_NODE_IP from terraform output before running:
+    #   export APP_NODE_IP=$(terraform -chdir=../terraform output -raw app_node_floating_ip)
+    k3s_server:
+      hosts:
+        app-node:
+          ansible_host: "{{ lookup('env', 'APP_NODE_IP') }}"
+
+    # k3s worker only — CHI@TACC bare-metal GPU node (training jobs only)
+    # Set GPU_NODE_IP from terraform output before running:
+    #   export GPU_NODE_IP=$(terraform -chdir=../terraform output -raw gpu_node_floating_ip)
+    k3s_agent:
+      hosts:
+        gpu-node:
+          ansible_host: "{{ lookup('env', 'GPU_NODE_IP') }}"

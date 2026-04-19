@@ -2,12 +2,20 @@
 .DS_Store
 __pycache__/
 *.pyc
+*.pyo
 .env
+.env.*
+!.env.example
+!docker/.env.example
 .venv/
+venv/
 .opencode/
 *.egg-info/
 dist/
 build/
+
+# jupyter
+.ipynb_checkpoints/
 
 # serving
 payload.json
@@ -23,3 +31,14 @@ mlruns/
 
 # data
 docker/.env
+
+# devops
+infra/terraform/.terraform/
+infra/terraform/.terraform.lock.hcl
+*.tfstate
+*.tfstate.backup
+*.tfvars
+*.tfvars.json
+infra/ansible/group_vars/all/vault.yml
+*.vault_pass
+.vault_pass

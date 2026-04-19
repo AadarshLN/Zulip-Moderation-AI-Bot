@@ -1,0 +1,49 @@
+# ─── Non-sensitive configuration ─────────────────────────────────────────────
+# All secrets go in vault.yml (encrypted). This file is safe to commit.
+
+# Resource name suffix — must match the suffix used in terraform.tfvars
+# Used to construct node names (app-node-<suffix>, gpu-node-<suffix>)
+suffix: "proj09-devops"
+
+# k3s version to install
+k3s_version: "v1.31.4+k3s1"
+
+# Local storage directory for k3s local-path provisioner (on root disk)
+# Chameleon TACC KVM does not expose Cinder block storage via the service catalog,
+# so we use the instance root disk. MLflow artifacts + Zulip uploads go to
+# Chameleon Object Store (Swift) which is the persistent object storage.
+local_path_data_dir: /opt/local-path-provisioner
+
+# nginx-ingress controller version
+nginx_ingress_version: "v1.12.0"
+
+# NVIDIA device plugin version
+nvidia_device_plugin_version: "v0.18.2"
+
+# Container image tags
+postgres_image: "postgres:16"
+memcached_image: "memcached:1.6-alpine"
+rabbitmq_image: "rabbitmq:3.13-management-alpine"
+redis_image: "redis:7-alpine"
+zulip_image: "zulip/docker-zulip:9.4-0"
+mlflow_image: "ghcr.io/mlflow/mlflow:v3.1.0"
+minio_image: "minio/minio:RELEASE.2025-01-20T14-49-07Z"
+
+# MinIO — persistent object storage for MLflow model artifacts
+# Bucket is created automatically on first deploy via MLflow's create-bucket initContainer
+minio_bucket: "mlflow-artifacts"
+
+# Chameleon Object Store container names (Swift containers/buckets)
+# Used by Zulip for file uploads and avatars (separate from MLflow artifacts)
+os_zulip_uploads_bucket: "zulip-uploads"
+os_zulip_avatars_bucket: "zulip-avatars"
+
+# Chameleon Swift S3-compatible endpoint (used by Zulip uploads only)
+# Find yours at: Chameleon dashboard → Object Store → "EC2 Credentials" / API endpoints
+# CHI@TACC example: https://chi.tacc.chameleoncloud.org:7480
+# CHI@UC example:   https://chi.uc.chameleoncloud.org:7480
+chameleon_s3_endpoint: "https://chi.tacc.chameleoncloud.org:7480"
+
+# Domain pattern (nip.io embeds the IP in the hostname — no DNS setup needed)
+# Constructed at deploy time as: <service>.<floating_ip>.nip.io
+# e.g., zulip.192.168.x.x.nip.io

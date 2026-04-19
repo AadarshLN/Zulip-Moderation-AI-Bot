@@ -1,0 +1,209 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: zulip-pvc
+  namespace: zulip
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zulip
+  namespace: zulip
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: zulip
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: zulip
+    spec:
+      # Zulip requires high file descriptor limits
+      securityContext:
+        sysctls: []
+
+      initContainers:
+        - name: set-limit
+          image: busybox:1.36
+          command: ["sh", "-c", "ulimit -n 1048576"]
+          securityContext:
+            privileged: true
+        - name: wait-for-postgres
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z postgres.zulip.svc.cluster.local 5432; do echo 'waiting for postgres'; sleep 3; done"]
+        - name: wait-for-rabbitmq
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z rabbitmq.zulip.svc.cluster.local 5672; do echo 'waiting for rabbitmq'; sleep 3; done"]
+        - name: wait-for-redis
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z redis.zulip.svc.cluster.local 6379; do echo 'waiting for redis'; sleep 3; done"]
+        - name: wait-for-memcached
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z memcached.zulip.svc.cluster.local 11211; do echo 'waiting for memcached'; sleep 3; done"]
+
+      containers:
+        - name: zulip
+          image: zulip/docker-zulip:9.4-0
+          ports:
+            - containerPort: 80
+          securityContext:
+            capabilities:
+              add: ["SYS_RESOURCE"]
+            runAsUser: 0
+          env:
+            # ── Zulip core settings ──────────────────────────────────────────
+            # SETTING_ prefix maps to Zulip's /etc/zulip/settings.py
+            # SECRETS_ prefix maps to /etc/zulip/zulip-secrets.conf
+
+            # Replace <FLOATING_IP> with the actual IP at deploy time.
+            # Ansible post_k8s.yml can template this, or set it here manually.
+            - name: SETTING_EXTERNAL_HOST
+              value: "zulip.FLOATING_IP_PLACEHOLDER.nip.io"
+
+            - name: SETTING_ZULIP_ADMINISTRATOR
+              valueFrom:
+                secretKeyRef:
+                  name: zulip-secrets
+                  key: ZULIP_ADMINISTRATOR
+
+            - name: SECRETS_secret_key
+              valueFrom:
+                secretKeyRef:
+                  name: zulip-secrets
+                  key: SECRET_KEY
+
+            # ── PostgreSQL ───────────────────────────────────────────────────
+            - name: DB_HOST
+              value: "postgres.zulip.svc.cluster.local"
+            - name: DB_HOST_PORT
+              value: "5432"
+            - name: DB_USER
+              value: "zulip"
+            - name: SETTING_REMOTE_POSTGRES_HOST
+              value: "postgres.zulip.svc.cluster.local"
+            - name: SETTING_REMOTE_POSTGRES_PORT
+              value: "5432"
+            - name: SETTING_REMOTE_POSTGRES_SSLMODE
+              value: "disable"
+            - name: POSTGRES_USER
+              value: "zulip"
+            - name: POSTGRES_DB
+              value: "zulip"
+            - name: SECRETS_postgres_password
+              valueFrom:
+                secretKeyRef:
+                  name: zulip-secrets
+                  key: POSTGRES_PASSWORD
+
+            # ── Memcached ────────────────────────────────────────────────────
+            - name: SETTING_MEMCACHED_LOCATION
+              value: "memcached.zulip.svc.cluster.local:11211"
+
+            # ── RabbitMQ ─────────────────────────────────────────────────────
+            - name: SETTING_RABBITMQ_HOST
+              value: "rabbitmq.zulip.svc.cluster.local"
+            - name: SETTING_RABBITMQ_PORT
+              value: "5672"
+            - name: SECRETS_rabbitmq_password
+              valueFrom:
+                secretKeyRef:
+                  name: zulip-secrets
+                  key: RABBITMQ_PASSWORD
+
+            # ── Redis ────────────────────────────────────────────────────────
+            - name: SETTING_REDIS_HOST
+              value: "redis.zulip.svc.cluster.local"
+            - name: SETTING_REDIS_PORT
+              value: "6379"
+            - name: SECRETS_redis_password
+              valueFrom:
+                secretKeyRef:
+                  name: zulip-secrets
+                  key: REDIS_PASSWORD
+
+            # ── File uploads → Chameleon Object Store (Swift S3-compatible) ──
+            - name: SETTING_S3_AUTH_UPLOADS_BUCKET
+              value: "zulip-uploads"
+            - name: SETTING_S3_AVATAR_BUCKET
+              value: "zulip-avatars"
+            # Substituted by Ansible post_k8s.yml from group_vars/all/vars.yml
+            - name: SETTING_S3_ENDPOINT_URL
+              value: "https://chi.tacc.chameleoncloud.org:7480"
+            - name: SECRETS_s3_key
+              valueFrom:
+                secretKeyRef:
+                  name: zulip-secrets
+                  key: OS_ACCESS_KEY
+            - name: SECRETS_s3_secret_key
+              valueFrom:
+                secretKeyRef:
+                  name: zulip-secrets
+                  key: OS_SECRET_KEY
+
+            # ── Auth / misc ──────────────────────────────────────────────────
+            - name: ZULIP_AUTH_BACKENDS
+              value: "EmailAuthBackend"
+            - name: DISABLE_HTTPS
+              value: "True"
+            - name: SSL_CERTIFICATE_GENERATION    # <--- ADD THIS
+              value: "self-signed"
+            - name: SETTING_LOADBALANCER_IPS
+              value: '["10.42.0.1,127.0.0.1"]'
+            - name: ZULIP_CONFIG_REMOTE_HOST_IS_IN_PROXY
+              value: "True"
+            - name: LOADBALANCER_IPS
+              value: "10.42.0.1,127.0.0.1"
+
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: 2000m
+              memory: 2Gi
+
+          volumeMounts:
+            - name: zulip-storage
+              mountPath: /data
+
+          livenessProbe:
+            tcpSocket:
+              port: 80
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            failureThreshold: 10
+
+          readinessProbe:
+            tcpSocket:
+              port: 80
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            failureThreshold: 20
+            timeoutSeconds: 10
+
+      volumes:
+        - name: zulip-storage
+          persistentVolumeClaim:
+            claimName: zulip-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zulip
+  namespace: zulip
+spec:
+  selector:
+    app: zulip
+  ports:
+    - port: 80
+      targetPort: 80
