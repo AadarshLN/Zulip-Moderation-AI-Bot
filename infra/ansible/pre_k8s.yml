@@ -1,12 +1,15 @@
 ---
-# pre_k8s.yml — Run BEFORE installing k3s
-# Disables firewall, installs Docker, NVIDIA Toolkit, sets up local storage directory.
+# pre_k8s.yml — Run BEFORE installing k3s on both nodes.
+# Base setup (firewall, Docker, local storage) runs on all nodes.
+# NVIDIA Container Toolkit runs only on the GPU node (k3s_agent).
 #
 # Usage:
-#   export ANSIBLE_HOST=$(terraform -chdir=../terraform output -raw floating_ip_out)
+#   export APP_NODE_IP=$(terraform -chdir=../terraform output -raw app_node_floating_ip)
+#   export GPU_NODE_IP=$(terraform -chdir=../terraform output -raw gpu_node_floating_ip)
 #   ansible-playbook -i inventory.yml pre_k8s.yml --vault-password-file ~/.vault_pass
 
-- name: Pre-k3s VM configuration
+# ── Base setup: runs on ALL nodes ─────────────────────────────────────────────
+- name: Pre-k3s base configuration (all nodes)
   hosts: all
   become: true
   gather_facts: true
@@ -115,8 +118,30 @@
         name: docker
         state: restarted
 
-    # ── NVIDIA Container Toolkit ────────────────────────────────────────────
-    # Installed here so K3s can auto-detect it on first boot.
+    # ── Local storage directory ─────────────────────────────────────────────
+
+    - name: Create local-path provisioner data directory
+      ansible.builtin.file:
+        path: "{{ local_path_data_dir }}"
+        state: directory
+        mode: "0777"
+
+    - name: Show available disk space
+      ansible.builtin.command: df -h /
+      register: df_out
+      changed_when: false
+
+    - name: Print disk info
+      ansible.builtin.debug:
+        msg: "{{ df_out.stdout }}"
+
+# ── NVIDIA Container Toolkit: GPU node only ───────────────────────────────────
+- name: Install NVIDIA Container Toolkit (GPU node only)
+  hosts: k3s_agent
+  become: true
+  gather_facts: false
+
+  tasks:
 
     - name: Add NVIDIA Container Toolkit GPG key
       ansible.builtin.shell: |
@@ -137,22 +162,3 @@
         name: nvidia-container-toolkit
         state: present
         update_cache: true
-
-    # ── Local storage directory ─────────────────────────────────────────────
-    # k3s local-path provisioner uses the root disk.
-    # MLflow artifacts and Zulip uploads go to Chameleon Object Store (Swift).
-
-    - name: Create local-path provisioner data directory
-      ansible.builtin.file:
-        path: "{{ local_path_data_dir }}"
-        state: directory
-        mode: "0777"
-
-    - name: Show available disk space
-      ansible.builtin.command: df -h /
-      register: df_out
-      changed_when: false
-
-    - name: Print disk info
-      ansible.builtin.debug:
-        msg: "{{ df_out.stdout }}"

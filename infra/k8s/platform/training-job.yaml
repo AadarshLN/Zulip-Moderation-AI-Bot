@@ -63,6 +63,15 @@ spec:
     spec:
       restartPolicy: Never
 
+      # Pin to GPU node — which carries the dedicated=gpu:NoSchedule taint.
+      # Without the toleration this pod would not schedule anywhere.
+      nodeSelector:
+        dedicated: gpu
+      tolerations:
+        - key: dedicated
+          value: gpu
+          effect: NoSchedule
+
       containers:
         - name: trainer
           # Replace with your image: docker build -t <user>/zulip-moderation-trainer:latest .
@@ -130,8 +139,3 @@ spec:
           persistentVolumeClaim:
             claimName: training-data-pvc
 
-      # Toleration required — the GPU node has this taint applied
-      tolerations:
-        - key: "nvidia.com/gpu"
-          operator: "Exists"
-          effect: "NoSchedule"

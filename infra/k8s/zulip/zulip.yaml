@@ -166,11 +166,11 @@ spec:
 
           resources:
             requests:
-              cpu: 500m
-              memory: 2Gi
+              cpu: 200m
+              memory: 512Mi
             limits:
               cpu: 2000m
-              memory: 5Gi
+              memory: 2Gi
 
           volumeMounts:
             - name: zulip-storage

@@ -15,7 +15,12 @@ variable "reservation_id" {
 }
 
 variable "flavor_name" {
-  description = "OpenStack flavor. CHI@TACC bare-metal has only 'baremetal'."
+  description = "OpenStack flavor for the GPU node. CHI@TACC bare-metal has only 'baremetal'."
   type        = string
   default     = "baremetal"
+}
+
+variable "app_reservation_id" {
+  description = "KVM@TACC Blazar reservation ID for the app node. Used as the flavor_id when launching the instance."
+  type        = string
 }

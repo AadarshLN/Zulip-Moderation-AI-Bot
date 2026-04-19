@@ -4,10 +4,10 @@
 # Usage:
 #   ansible-playbook -i inventory.yml post_k8s.yml --vault-password-file ~/.vault_pass
 #
-# Requires: ANSIBLE_HOST env var set to the floating IP
+# Requires: APP_NODE_IP and GPU_NODE_IP env vars set from terraform output
 
 - name: Deploy platform and Zulip services on Kubernetes
-  hosts: all
+  hosts: k3s_server
   become: false  # kubectl runs as cc user
   gather_facts: true
   vars:
@@ -297,7 +297,7 @@
 
     - name: Print realm creation link
       ansible.builtin.debug:
-        msg: "{{ realm_link.stdout }}"
+        msg: "{{ realm_link.stdout | regex_replace('^https://', 'http://') }}"
       when: realm_link.stdout is defined and realm_link.stdout != ''
 
     - name: Print access URLs

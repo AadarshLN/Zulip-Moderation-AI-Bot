@@ -4,9 +4,20 @@ all:
     ansible_user: cc
     ansible_ssh_private_key_file: ~/.ssh/id_rsa_chameleon
     ansible_ssh_common_args: "-o StrictHostKeyChecking=no"
-  hosts:
-    zulip-node:
-      # Set this from terraform output before running Ansible:
-      #   export ANSIBLE_HOST=$(terraform -chdir=../terraform output -raw floating_ip_out)
-      # Then reference it here, or replace with the actual IP after terraform apply.
-      ansible_host: "{{ lookup('env', 'ANSIBLE_HOST') }}"
+
+  children:
+    # k3s control plane + worker — KVM@TACC app node (all services run here)
+    # Set APP_NODE_IP from terraform output before running:
+    #   export APP_NODE_IP=$(terraform -chdir=../terraform output -raw app_node_floating_ip)
+    k3s_server:
+      hosts:
+        app-node:
+          ansible_host: "{{ lookup('env', 'APP_NODE_IP') }}"
+
+    # k3s worker only — CHI@TACC bare-metal GPU node (training jobs only)
+    # Set GPU_NODE_IP from terraform output before running:
+    #   export GPU_NODE_IP=$(terraform -chdir=../terraform output -raw gpu_node_floating_ip)
+    k3s_agent:
+      hosts:
+        gpu-node:
+          ansible_host: "{{ lookup('env', 'GPU_NODE_IP') }}"

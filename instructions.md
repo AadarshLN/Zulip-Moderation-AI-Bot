@@ -64,14 +64,16 @@ terraform plan    # review what will be created
 terraform apply   # will prompt for confirmation
 ```
 
-### 1.3 Export the floating IP
+### 1.3 Export node IPs
 
 ```bash
-export ANSIBLE_HOST=$(terraform output -raw floating_ip_out)
-echo $ANSIBLE_HOST   # e.g. 129.114.x.x
+export APP_NODE_IP=$(terraform output -raw app_node_floating_ip)
+export GPU_NODE_IP=$(terraform output -raw gpu_node_floating_ip)
+echo "App node: $APP_NODE_IP"
+echo "GPU node: $GPU_NODE_IP"
 ```
 
-Keep this value — every Ansible command needs it.
+Keep both values — Ansible needs them.
 
 ---
 
@@ -124,7 +126,7 @@ All commands run from `infra/ansible/` on your local machine.
 
 ### 3.1 Pre-K8s setup
 
-Disables the firewall, installs Docker, creates the local storage directory.
+Disables the firewall, installs Docker, creates the local storage directory on both nodes. Installs NVIDIA Container Toolkit on the GPU node only.
 
 ```bash
 ansible-playbook -i inventory.yml pre_k8s.yml \
@@ -133,13 +135,15 @@ ansible-playbook -i inventory.yml pre_k8s.yml \
 
 **Verify:**
 ```bash
-ssh -i ~/.ssh/id_rsa_chameleon cc@$ANSIBLE_HOST \
-  "docker --version && docker ps"
+ssh -i ~/.ssh/id_rsa_chameleon cc@$APP_NODE_IP "docker --version"
 ```
 
 ### 3.2 Install k3s
 
-Installs k3s, configures NVIDIA for the k3s containerd runtime, deploys nginx-ingress.
+Three plays in sequence:
+1. Install k3s server on app-node (control plane)
+2. Configure NVIDIA containerd runtime and join GPU node as agent
+3. Apply node labels/taints, deploy NVIDIA device plugin, deploy nginx-ingress pinned to app-node
 
 ```bash
 ansible-playbook -i inventory.yml install_k3s.yml \
@@ -148,11 +152,11 @@ ansible-playbook -i inventory.yml install_k3s.yml \
 
 **Verify:**
 ```bash
-ssh -i ~/.ssh/id_rsa_chameleon cc@$ANSIBLE_HOST \
-  "kubectl get nodes -o wide && nvidia-smi"
+ssh -i ~/.ssh/id_rsa_chameleon cc@$APP_NODE_IP \
+  "kubectl get nodes -o wide"
 ```
 
-Expected: node in `Ready` state, GPU visible in `nvidia-smi`.
+Expected: two nodes in `Ready` state — `app-node-proj09` (control-plane) and `gpu-node-proj09`.
 
 ### 3.3 Deploy all services
 
@@ -176,7 +180,7 @@ And a realm creation link for first-time setup.
 ## Phase 4 — Verify the deployment
 
 ```bash
-ssh -i ~/.ssh/id_rsa_chameleon cc@$ANSIBLE_HOST
+ssh -i ~/.ssh/id_rsa_chameleon cc@$APP_NODE_IP
 
 # Check all pods
 kubectl get pods -n zulip -o wide
@@ -213,13 +217,13 @@ Copy your training CSV to the node so it lands in the PVC mount path:
 
 ```bash
 scp -i ~/.ssh/id_rsa_chameleon your_data.csv \
-  cc@$ANSIBLE_HOST:/opt/local-path-provisioner/training-data/
+  cc@$APP_NODE_IP:/opt/local-path-provisioner/training-data/
 ```
 
 ### 5.3 Submit the training job
 
 ```bash
-ssh -i ~/.ssh/id_rsa_chameleon cc@$ANSIBLE_HOST
+ssh -i ~/.ssh/id_rsa_chameleon cc@$APP_NODE_IP
 
 kubectl apply -f ~/k8s/platform/training-job.yaml
 ```

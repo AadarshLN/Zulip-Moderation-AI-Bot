@@ -1,6 +1,10 @@
 # ─── Non-sensitive configuration ─────────────────────────────────────────────
 # All secrets go in vault.yml (encrypted). This file is safe to commit.
 
+# Resource name suffix — must match the suffix used in terraform.tfvars
+# Used to construct node names (app-node-<suffix>, gpu-node-<suffix>)
+suffix: "proj09-devops"
+
 # k3s version to install
 k3s_version: "v1.31.4+k3s1"
 
