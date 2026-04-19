@@ -1,9 +1,18 @@
+# serving
 fastapi==0.115.6
 uvicorn==0.34.0
 torch==2.5.1
 transformers==4.47.1
 pyyaml==6.0.2
 pydantic==2.10.4
+
+# training
+pandas
+numpy
+scikit-learn
+mlflow
+joblib
+tqdm
 
 # dev
 ruff==0.15.11

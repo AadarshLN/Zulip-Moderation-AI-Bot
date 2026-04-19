@@ -1,5 +1,16 @@
+# general
 .DS_Store
 __pycache__/
 *.pyc
 .env
+
+# serving
 payload.json
+
+# training
+data/*
+!data/.gitkeep
+mlruns/
+*.pt
+*.bin
+*.db
