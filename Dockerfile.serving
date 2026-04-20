@@ -6,7 +6,7 @@ WORKDIR /app
 RUN pip install --no-cache-dir fastapi uvicorn torch transformers pyyaml
 
 # Copy app and config
-COPY src/main.py .Oka
+COPY src/main.py .
 COPY serving_config.yaml .
 
 # Expose port for Zulip

@@ -29,6 +29,9 @@ mlruns/
 *.db
 *.csv
 
+# dev
+.ruff_cache/
+
 # data
 docker/.env
 
