@@ -1,0 +1,26 @@
+# Global fallback
+* @purvansh17
+
+# Serving
+services/inference/ @purvansh17
+Dockerfile.serving @purvansh17
+serving_config.yaml @purvansh17
+evaluate.sh @purvansh17
+
+# Training
+src/data.py @AadarshLN
+src/models.py @AadarshLN
+src/metrics.py @AadarshLN
+scripts/ @AadarshLN
+configs/ @AadarshLN
+Dockerfile.training @AadarshLN
+train/ @AadarshLN
+
+# Data
+services/chatsentry/ @Rishabhku03
+docker/ @Rishabhku03
+config/ @Rishabhku03
+
+# DevOps
+infra/ @kichanitish
+instructions.md @kichanitish

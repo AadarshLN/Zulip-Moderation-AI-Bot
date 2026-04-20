@@ -7,7 +7,7 @@ __pycache__/
 .env
 .env.*
 !.env.example
-!docker/.env.example
+system_flow.md
 .venv/
 venv/
 .opencode/

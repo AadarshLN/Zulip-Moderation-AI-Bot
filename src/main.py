@@ -20,19 +20,17 @@ MODEL_NAME = "GroNLP/hateBERT"
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME)
 
-# MODEL-LEVEL OPTIMIZATION: INT8 Quantization
-# TODO: quantize_dynamic is CPU-only — incompatible with GPU move below. Coordinate with model person.
-model = torch.quantization.quantize_dynamic(model, {torch.nn.Linear}, dtype=torch.qint8)
-
 model.eval()
 
-# Move to GPU/MPS if available
 if torch.backends.mps.is_available():
     device = torch.device("mps")
 elif torch.cuda.is_available():
     device = torch.device("cuda")
 else:
     device = torch.device("cpu")
+    # INT8 quantization is CPU-only — skip on GPU/MPS
+    model = torch.quantization.quantize_dynamic(model, {torch.nn.Linear}, dtype=torch.qint8)
+
 model.to(device)
 
 
