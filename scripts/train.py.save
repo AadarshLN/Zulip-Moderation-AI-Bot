@@ -260,8 +260,10 @@ def run_tfidf_baseline(cfg):
     train_y = bundle.train_df[["is_suicide", "is_toxicity"]].values
     test_y = bundle.test_df[["is_suicide", "is_toxicity"]].values
 
+
     val_x = None
     val_y = None
+    
     if bundle.val_df is not None:
       val_x = bundle.val_df["text"].tolist()
       val_y = bundle.val_df[["is_suicide", "is_toxicity"]].values
@@ -276,18 +278,19 @@ def run_tfidf_baseline(cfg):
 
     start = time.time()
     model.fit(train_x, train_y)
-    train_time = time.time() - start
-
+    train_time = time.time()-start
+   
     thresholds = {"suicide": 0.5, "toxicity": 0.5}
     val_metrics = None
-
     if val_x is not None:
       val_s_prob, val_t_prob = model.predict_proba(val_x)
       val_prob = np.stack([val_s_prob, val_t_prob], axis=1)
+
       if cfg["evaluation"].get("threshold_tuning", False):
-        thresholds = tune_thresholds(val_y, val_prob)
+          thresholds = tune_thresholds(val_y, val_prob)
+
       val_metrics = compute_multitask_metrics(val_y, val_prob, thresholds)
-    
+
     test_s_prob, test_t_prob = model.predict_proba(test_x)
     test_prob = np.stack([test_s_prob, test_t_prob], axis=1)
     test_metrics = compute_multitask_metrics(test_y, test_prob, thresholds)
@@ -362,38 +365,32 @@ def run_transformer(cfg):
             loop.set_postfix(loss=loss.item())
 
         mlflow.log_metric("train_loss", epoch_loss / max(len(train_loader), 1), step=epoch)
-        
-        if val_loader is not None:
-          val_metrics, _, _ = evaluate_transformer(
+
+        val_metrics, _, _ = evaluate_transformer(
             model, val_loader, device, {"suicide": 0.5, "toxicity": 0.5}
-          )
-          
-          #flat_val = {f"val_{k}": v for k, v in flatten_metrics(val_metrics).items()}
-          for k,v in flatten_metrics(val_metrics).items():
-            if v is not None and not np.isnan(v):
-              mlflow.log_metric(f"val_{k}", float(v), step=epoch)
-          if val_metrics["avg_f1"] > best_val_f1:
+        )
+        flat_val = {f"val_{k}": v for k, v in flatten_metrics(val_metrics).items()}
+        mlflow.log_metrics(flat_val, step=epoch)
+
+        if val_metrics["avg_f1"] > best_val_f1:
             best_val_f1 = val_metrics["avg_f1"]
-            torch.save(model.state_dict(), best_model_path)
-        else:
             torch.save(model.state_dict(), best_model_path)
 
     train_time = time.time() - start
 
     model.load_state_dict(torch.load(best_model_path, map_location=device))
 
-    thresholds = {"suicide": 0.5, "toxicity": 0.5}
-    
-    val_metrics = None
-    if val_loader is not None:
-      val_metrics, val_y, val_prob = evaluate_transformer(
+    val_metrics, val_y, val_prob = evaluate_transformer(
         model, val_loader, device, {"suicide": 0.5, "toxicity": 0.5}
-      )
-      if cfg["evaluation"].get("threshold_tuning", False):
+    )
+
+    thresholds = {"suicide": 0.5, "toxicity": 0.5}
+    if cfg["evaluation"].get("threshold_tuning", False):
         thresholds = tune_thresholds(val_y, val_prob)
-      val_metrics, _, _ = evaluate_transformer(model, val_loader, device, thresholds)
+
+    val_metrics, _, _ = evaluate_transformer(model, val_loader, device, thresholds)
     test_metrics, _, _ = evaluate_transformer(model, test_loader, device, thresholds)
-    
+
     return model, train_time, thresholds, val_metrics, test_metrics, best_model_path
 
 
@@ -440,26 +437,12 @@ def main():
             mlflow.sklearn.log_model(model.model, artifact_path="model")
         else:
             model, train_time, thresholds, val_metrics, test_metrics, best_model_path = run_transformer(cfg)
-            try:
-              mlflow.pytorch.log_model(model, artifact_path="model")
-            except Exception as e:
-              print(e)
-            #mlflow.log_artifact(str(best_model_path))
-            #print(f"Model saved locally at: {best_model_path}")
+            mlflow.pytorch.log_model(model, artifact_path="model")
+            mlflow.log_artifact(str(best_model_path))
 
-        #mlflow.log_metric("train_time_sec", train_time)
-        #print(f"Model saved locally at: {best_model_path}") 
-        if cfg["model"]["type"] != "tfidf_logreg":
-          print(f"Model saved locally at: {best_model_path}")
-        
-
-        
-        #mlflow.log_metric({f"test_{k}": v for k, v in flatten_metrics(test_metrics).items()})
-        for k, v in flatten_metrics(test_metrics).items():
-          if v is not None and not np.isnan(v):
-            mlflow.log_metric(f"test_{k}", float(v))
-
-
+        mlflow.log_metric("train_time_sec", train_time)
+        mlflow.log_metrics({f"val_{k}": v for k, v in flatten_metrics(val_metrics).items()})
+        mlflow.log_metrics({f"test_{k}": v for k, v in flatten_metrics(test_metrics).items()})
         Path(cfg["output"]["dir"]).mkdir(parents=True, exist_ok=True)
         thresholds_path = Path(cfg["output"]["dir"]) / "thresholds.json"
         metrics_path = Path(cfg["output"]["dir"]) / "final_metrics.json"

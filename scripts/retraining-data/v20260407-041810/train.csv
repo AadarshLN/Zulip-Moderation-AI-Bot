@@ -1,0 +1,13 @@
+cleaned_text,is_suicide,is_toxicity,source,message_id
+I feel like café life is meaningless,True,False,real,dd880498-6ac4-4df8-818e-37b507b037a9
+Check this out [URL] and [URL],True,False,real,4b07e19f-8751-41bd-abbe-8ced7e65835a
+I feel so sad and nobody cares about me,False,False,real,0a918094-fe95-422d-ace4-195312640f53
+I feel like café life is meaningless,True,False,real,dd880498-6ac4-4df8-818e-37b507b037a9
+Contact me at [EMAIL] or call [PHONE] I need help,False,True,real,98eab510-0a12-4aa5-ab0d-fdc591771782
+Email [EMAIL][URL] :crying_face: call [PHONE],False,False,real,723758ae-6aa7-4146-a8c3-033fe096d74d
+I feel so sad and nobody cares about me,False,False,real,0a918094-fe95-422d-ace4-195312640f53
+Hey [USER] and [USER] you guys are the worst,False,True,real,f02978d1-1a3e-4898-acf3-5a70c5cc6001
+I am so sad :crying_face: and crying :loudly_crying_face: nobody helps :pensive_face:,False,True,real,862f7619-e5c9-47c3-916d-01e210ffabbc
+"Hey team, the PR for the auth module is ready for review :thumbs_up:",False,False,real,f73eae61-8055-4b83-b500-1f8a5fe4b301
+IMPORTANT Please contact [USER] at [EMAIL] or call [PHONE]. Visit [URL] for details. This is a café review :face_with_tears_of_joy:,True,False,real,286c347d-e1ae-4e85-938b-7b67915f61a4
+python\nprint(hi) nobody understands me,True,False,real,5a687c19-5d12-48b7-9e3f-03c1eca42184

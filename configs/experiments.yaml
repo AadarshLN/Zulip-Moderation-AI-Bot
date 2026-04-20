@@ -5,9 +5,7 @@ mlflow:
   tracking_uri: http://<MLFLOW_IP>:5000
 
 data:
-  train_path: /workspace/data/processed/train.csv
-  val_path: /workspace/data/processed/val.csv
-  test_path: /workspace/data/processed/test.csv
+  dataset_root : /workspace/retraining-data
   max_length: 128
 
 baseline:

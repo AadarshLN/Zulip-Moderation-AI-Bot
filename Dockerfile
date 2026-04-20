@@ -1,11 +1,13 @@
-FROM pytorch/pytorch:2.5.1-cuda12.1-cudnn9-runtime
+FROM rocm/pytorch:rocm6.1_ubuntu22.04_py3.10_pytorch_2.4
 
 WORKDIR /workspace
 
 RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN grep -vE '^(torch|torchvision|torchaudio)([<=>].*)?$' requirements.txt > /tmp/requirements_no_torch.txt \
+    && pip install --no-cache-dir -r /tmp/requirements_no_torch.txt
+
 
 COPY . .
 
