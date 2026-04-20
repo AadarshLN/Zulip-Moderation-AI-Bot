@@ -1,11 +1,16 @@
+import logging
+import os
 import time
 
+import psycopg2
 import torch
 import torch.quantization
 import yaml
 from fastapi import FastAPI
 from pydantic import BaseModel
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+log = logging.getLogger(__name__)
 
 # Load configuration from YAML
 with open("serving_config.yaml", "r") as f:
@@ -65,9 +70,87 @@ def get_prediction(text: str):
     return toxicity_score, self_harm_score
 
 
+def log_to_moderation(message_id: str, action: str, confidence: float) -> None:
+    """Insert a row into the moderation table. Silently skips on any DB error."""
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        return
+    try:
+        conn = psycopg2.connect(database_url)
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO moderation (message_id, action, confidence, model_version, source)
+                    VALUES (%s::uuid, %s, %s, %s, 'real')
+                    """,
+                    (message_id, action, confidence, MODEL_NAME),
+                )
+        conn.close()
+    except Exception as e:
+        log.warning("moderation table write skipped: %s", e)
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/metrics")
+def metrics():
+    """Action distribution, average confidence, and 24h score drift from moderation table."""
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        return {"error": "DATABASE_URL not set"}
+    try:
+        conn = psycopg2.connect(database_url)
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        action,
+                        COUNT(*)          AS count,
+                        AVG(confidence)   AS avg_confidence
+                    FROM moderation
+                    WHERE model_version = %s
+                    GROUP BY action
+                    ORDER BY count DESC
+                    """,
+                    (MODEL_NAME,),
+                )
+                rows = cur.fetchall()
+
+                cur.execute(
+                    """
+                    SELECT
+                        AVG(CASE WHEN decided_at >= NOW() - INTERVAL '24 hours'
+                                 THEN confidence END) AS avg_24h,
+                        AVG(confidence)               AS avg_all_time,
+                        COUNT(*)                      AS total
+                    FROM moderation
+                    WHERE model_version = %s
+                    """,
+                    (MODEL_NAME,),
+                )
+                summary = cur.fetchone()
+        conn.close()
+
+        action_breakdown = [{"action": r[0], "count": r[1], "avg_confidence": round(r[2], 4)} for r in rows]
+        avg_24h, avg_all_time, total = summary
+        drift = round(float(avg_24h or 0) - float(avg_all_time or 0), 4)
+
+        return {
+            "model_version": MODEL_NAME,
+            "total_decisions": total,
+            "avg_confidence_24h": round(float(avg_24h or 0), 4),
+            "avg_confidence_all_time": round(float(avg_all_time or 0), 4),
+            "score_drift_24h": drift,
+            "action_breakdown": action_breakdown,
+        }
+    except Exception as e:
+        log.warning("metrics query failed: %s", e)
+        return {"error": str(e)}
 
 
 @app.post("/moderate")
@@ -95,6 +178,8 @@ async def moderate_message(request: ZulipRequest):
         reason = "Medium toxicity confidence. Warning sent to user."
 
     latency_ms = (time.time() - start_time) * 1000
+
+    log_to_moderation(request.message_id, response_action, toxicity)
 
     # Response (Output JSON)
     return {
