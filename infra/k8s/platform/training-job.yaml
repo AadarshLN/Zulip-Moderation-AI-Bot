@@ -26,8 +26,8 @@ metadata:
   name: training-config
   namespace: platform
 data:
-  # Which experiment config and run to execute (matches configs/experiments.yaml)
-  experiment_config: "configs/experiments.yaml"
+  # Which experiment config and run to execute (matches config/experiments.yaml)
+  experiment_config: "config/experiments.yaml"
   run_name: "hatebert_multihead"
   mlflow_experiment_name: "zulip_moderation_bot_training"
 ---
@@ -136,4 +136,3 @@ spec:
         - name: training-data
           persistentVolumeClaim:
             claimName: training-data-pvc
-

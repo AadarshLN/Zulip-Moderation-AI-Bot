@@ -13,4 +13,4 @@ COPY . .
 
 ENV PYTHONPATH=/workspace
 
-CMD ["python", "scripts/train.py", "--config", "configs/experiments.yaml", "--run", "hatebert_multihead"]
+CMD ["python", "scripts/train.py", "--config", "config/experiments.yaml", "--run", "hatebert_multihead"]
