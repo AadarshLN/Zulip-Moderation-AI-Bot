@@ -9,19 +9,36 @@ from transformers import AutoTokenizer
 @dataclass
 class TabularDataBundle:
     train_df: pd.DataFrame
-    val_df: pd.DataFrame
+    val_df: pd.DataFrame | None
     test_df: pd.DataFrame
 
 
-def load_splits(train_path: str, val_path: str, test_path: str) -> TabularDataBundle:
-    train_df = pd.read_csv(train_path)
-    val_df = pd.read_csv(val_path)
-    test_df = pd.read_csv(test_path)
+def _standardize_columns(df):
+    if "cleaned_text" in df.columns and "text" not in df.columns:
+        df = df.rename(columns={"cleaned_text": "text"})
 
-    for df in (train_df, val_df, test_df):
-        df["text"] = df["text"].astype(str).fillna("")
-        df["is_suicide"] = df["is_suicide"].astype(int)
-        df["is_toxicity"] = df["is_toxicity"].astype(int)
+    required = ["text", "is_suicide", "is_toxicity"]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing required columns: {missing}")
+
+    return df
+
+
+def _clean_df(df):
+    df["text"] = df["text"].fillna("").astype(str)
+    df["is_suicide"] = df["is_suicide"].astype(int)
+    df["is_toxicity"] = df["is_toxicity"].astype(int)
+    return df
+
+
+def load_splits(train_path: str, val_path: str | None, test_path: str) -> TabularDataBundle:
+    train_df = _clean_df(_standardize_columns(pd.read_csv(train_path)))
+    test_df = _clean_df(_standardize_columns(pd.read_csv(test_path)))
+
+    val_df = None
+    if val_path is not None:
+        val_df = _clean_df(_standardize_columns(pd.read_csv(val_path)))
 
     return TabularDataBundle(train_df=train_df, val_df=val_df, test_df=test_df)
 

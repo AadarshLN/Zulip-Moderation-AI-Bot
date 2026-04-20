@@ -43,3 +43,10 @@ vault_zulip_bot_api_key: "CHANGE_ME_bot_api_key"
 # Or via CLI: openstack ec2 credentials create
 vault_chameleon_ec2_access: "CHANGE_ME_ec2_access_key"
 vault_chameleon_ec2_secret: "CHANGE_ME_ec2_secret_key"
+
+# Google OAuth — allows users to sign in with Google (no email confirmation needed).
+# Create credentials at console.cloud.google.com:
+#   APIs & Services → Credentials → Create OAuth 2.0 Client ID (Web application)
+#   Authorized redirect URI: https://zulip.<FLOATING_IP>.nip.io/complete/google/
+vault_google_oauth2_key: "CHANGE_ME_google_client_id"
+vault_google_oauth2_secret: "CHANGE_ME_google_client_secret"

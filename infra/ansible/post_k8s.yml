@@ -80,6 +80,18 @@
 
     # ── K8s Secrets (created inline — never written to disk as plaintext YAML) ─
 
+    - name: Create zulip-google-oauth secret (namespace zulip)
+      ansible.builtin.shell: |
+        kubectl create secret generic zulip-google-oauth \
+          --namespace zulip \
+          --from-literal=GOOGLE_OAUTH2_KEY="{{ vault_google_oauth2_key }}" \
+          --from-literal=GOOGLE_OAUTH2_SECRET="{{ vault_google_oauth2_secret }}" \
+          --dry-run=client -o yaml | kubectl apply -f -
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      no_log: true
+      changed_when: true
+
     - name: Create postgres-credentials secret (namespace zulip)
       ansible.builtin.shell: |
         kubectl create secret generic postgres-credentials \

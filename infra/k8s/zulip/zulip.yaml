@@ -152,7 +152,17 @@ spec:
 
             # ── Auth / misc ──────────────────────────────────────────────────
             - name: ZULIP_AUTH_BACKENDS
-              value: "EmailAuthBackend"
+              value: "EmailAuthBackend,GoogleAuthBackend"
+            - name: SETTING_SOCIAL_AUTH_GOOGLE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: zulip-google-oauth
+                  key: GOOGLE_OAUTH2_KEY
+            - name: SECRETS_social_auth_google_secret
+              valueFrom:
+                secretKeyRef:
+                  name: zulip-google-oauth
+                  key: GOOGLE_OAUTH2_SECRET
             - name: DISABLE_HTTPS
               value: "True"
             - name: SSL_CERTIFICATE_GENERATION

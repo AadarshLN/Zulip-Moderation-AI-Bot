@@ -131,6 +131,8 @@ Key values to fill in:
 | `vault_chatsentry_db_password` | Choose a strong password |
 | `vault_zulip_bot_email` | Fill in after Phase 4.1 (Zulip bot creation) |
 | `vault_zulip_bot_api_key` | Fill in after Phase 4.1 (Zulip bot creation) |
+| `vault_google_oauth2_key` | Google OAuth Client ID — see Phase 4.2 |
+| `vault_google_oauth2_secret` | Google OAuth Client Secret — see Phase 4.2 |
 
 **Note:** `vault_zulip_bot_email` and `vault_zulip_bot_api_key` are obtained from the Zulip UI after the realm is created. Leave them as placeholders for now and fill them in before running `post_k8s.yml`.
 

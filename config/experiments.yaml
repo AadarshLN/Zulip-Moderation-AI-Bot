@@ -6,9 +6,7 @@ mlflow:
   tracking_uri: http://mlflow.129.114.26.93.nip.io:5000
 
 data:
-  train_path: /workspace/data/processed/train.csv
-  val_path: /workspace/data/processed/val.csv
-  test_path: /workspace/data/processed/test.csv
+  dataset_root : /workspace/retraining-data
   max_length: 128
 
 baseline:
@@ -16,6 +14,9 @@ baseline:
   ngram_range: [1, 2]
   c: 1.0
   max_iter: 1000
+
+training:
+  resume_from_checkpoint: /workspace/checkpoints/best_model.pt
 
 training:
   batch_size: 16
