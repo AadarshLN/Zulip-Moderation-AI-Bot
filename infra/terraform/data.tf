@@ -30,3 +30,8 @@ data "openstack_networking_secgroup_v2" "kvm_allow_http" {
   provider = openstack.kvm
   name     = "default"
 }
+
+data "openstack_networking_secgroup_v2" "kvm_allow_https" {
+  provider = openstack.kvm
+  name     = "allow-https-443"
+}

@@ -135,30 +135,46 @@
       ansible.builtin.debug:
         msg: "{{ df_out.stdout }}"
 
-# ── NVIDIA Container Toolkit: GPU node only ───────────────────────────────────
-- name: Install NVIDIA Container Toolkit (GPU node only)
-  hosts: k3s_agent
+# ── Cinder volume mount: app-node only ───────────────────────────────────────
+- name: Mount Cinder data volume on app-node
+  hosts: k3s_server
   become: true
-  gather_facts: false
+  gather_facts: true
 
   tasks:
 
-    - name: Add NVIDIA Container Toolkit GPG key
-      ansible.builtin.shell: |
-        curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
-          gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
-      args:
-        creates: /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+    # The Cinder volume appears as /dev/vdb (first attached volume on KVM@TACC).
+    # Format only if no filesystem exists (idempotent).
+    - name: Check if Cinder volume has a filesystem
+      ansible.builtin.command: blkid /dev/vdb
+      register: blkid_result
+      changed_when: false
+      failed_when: false
 
-    - name: Add NVIDIA Container Toolkit apt repository
-      ansible.builtin.shell: |
-        curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
-          sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
-          tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
-      changed_when: true
+    - name: Format Cinder volume with ext4 (first attach only)
+      ansible.builtin.command: mkfs.ext4 -L app-data /dev/vdb
+      when: blkid_result.rc != 0
 
-    - name: Install nvidia-container-toolkit
-      ansible.builtin.apt:
-        name: nvidia-container-toolkit
-        state: present
-        update_cache: true
+    - name: Create mount point
+      ansible.builtin.file:
+        path: "{{ local_path_data_dir }}"
+        state: directory
+        mode: "0777"
+
+    - name: Mount Cinder volume at local-path-provisioner directory
+      ansible.builtin.mount:
+        path: "{{ local_path_data_dir }}"
+        src: /dev/vdb
+        fstype: ext4
+        opts: defaults,nofail
+        state: mounted
+
+    - name: Ensure mount point permissions after mount
+      ansible.builtin.file:
+        path: "{{ local_path_data_dir }}"
+        state: directory
+        mode: "0777"
+
+# AMD MI100 GPUs (CC-Ubuntu24.04-ROCm image) do not require a container toolkit.
+# ROCm is pre-installed on the image. GPU access in containers uses /dev/kfd and
+# /dev/dri device passthrough, which the AMD k8s-device-plugin handles automatically.

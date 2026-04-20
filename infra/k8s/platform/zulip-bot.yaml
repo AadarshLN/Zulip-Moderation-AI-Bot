@@ -1,0 +1,81 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zulip-bot
+  namespace: platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: zulip-bot
+  # Recreate ensures only one bot instance polls the event queue at a time.
+  # Running two instances would process each message twice.
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: zulip-bot
+    spec:
+      initContainers:
+        - name: wait-for-zulip
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z zulip.zulip.svc.cluster.local 80; do
+                echo "Waiting for Zulip..."; sleep 5
+              done
+        - name: wait-for-chatsentry
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z chatsentry.platform.svc.cluster.local 8000; do
+                echo "Waiting for ChatSentry..."; sleep 5
+              done
+        - name: wait-for-inference
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z inference.platform.svc.cluster.local 8000; do
+                echo "Waiting for inference service..."; sleep 5
+              done
+      containers:
+        - name: zulip-bot
+          image: kichanitish/zulip-moderation-bot:latest
+          imagePullPolicy: Always
+          env:
+            - name: ZULIP_SITE
+              value: "https://zulip.FLOATING_IP_PLACEHOLDER.nip.io"
+            - name: ZULIP_BOT_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: zulip-bot-credentials
+                  key: ZULIP_BOT_EMAIL
+            - name: ZULIP_BOT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: zulip-bot-credentials
+                  key: ZULIP_BOT_API_KEY
+            - name: CHATSENTRY_URL
+              value: "http://chatsentry.platform.svc.cluster.local:8000"
+            - name: INFERENCE_URL
+              value: "http://inference.platform.svc.cluster.local:8000"
+            - name: MODERATION_STREAM
+              value: "moderation"
+            - name: DELETE_THRESHOLD
+              value: "0.8"
+            - name: FLAG_THRESHOLD
+              value: "0.5"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi

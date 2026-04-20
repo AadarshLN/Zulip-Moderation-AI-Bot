@@ -155,22 +155,27 @@ spec:
               value: "EmailAuthBackend"
             - name: DISABLE_HTTPS
               value: "True"
-            - name: SSL_CERTIFICATE_GENERATION    # <--- ADD THIS
+            - name: SSL_CERTIFICATE_GENERATION
               value: "self-signed"
+            - name: SETTING_CSRF_TRUSTED_ORIGINS
+              value: '["https://zulip.FLOATING_IP_PLACEHOLDER.nip.io"]'
+            # Trust all pods in the k3s pod CIDR as proxy IPs (nginx-ingress is in 10.42.0.0/16)
             - name: SETTING_LOADBALANCER_IPS
-              value: '["10.42.0.1,127.0.0.1"]'
-            - name: ZULIP_CONFIG_REMOTE_HOST_IS_IN_PROXY
-              value: "True"
+              value: "10.42.0.0/16"
             - name: LOADBALANCER_IPS
-              value: "10.42.0.1,127.0.0.1"
+              value: "10.42.0.0/16"
+            # Allow internal k8s DNS hostname so the zulip-bot can connect from within the cluster.
+            # Django rejects requests with unknown Host headers with 400 Bad Request.
+            - name: SETTING_ALLOWED_HOSTS
+              value: '["zulip.FLOATING_IP_PLACEHOLDER.nip.io", "zulip.zulip.svc.cluster.local", "localhost"]'
 
           resources:
             requests:
-              cpu: 200m
-              memory: 512Mi
+              cpu: 500m
+              memory: 2Gi
             limits:
               cpu: 2000m
-              memory: 2Gi
+              memory: 4Gi
 
           volumeMounts:
             - name: zulip-storage

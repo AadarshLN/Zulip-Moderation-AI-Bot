@@ -113,21 +113,19 @@ spec:
             # The server proxies all artifact operations to MinIO — no S3 credentials
             # or endpoint needed here. Set MLFLOW_TRACKING_URI and MLflow handles the rest.
 
-            # ── CUDA visibility ───────────────────────────────────────────────
-            - name: NVIDIA_VISIBLE_DEVICES
+            # ── ROCm / AMD GPU visibility ─────────────────────────────────────
+            - name: HIP_VISIBLE_DEVICES
               value: "all"
-            - name: NVIDIA_DRIVER_CAPABILITIES
-              value: "compute,utility"
 
           resources:
             requests:
               cpu: 2000m
               memory: 8Gi
-              nvidia.com/gpu: "1"
+              amd.com/gpu: "1"
             limits:
               cpu: 4000m
               memory: 16Gi
-              nvidia.com/gpu: "1"
+              amd.com/gpu: "1"
 
           volumeMounts:
             - name: training-data

@@ -51,11 +51,18 @@
         regexp: "FLOATING_IP_PLACEHOLDER"
         replace: "{{ ansible_host }}"
 
+    - name: Replace FLOATING_IP_PLACEHOLDER in Zulip bot manifest
+      ansible.builtin.replace:
+        path: "{{ manifest_dest }}/platform/zulip-bot.yaml"
+        regexp: "FLOATING_IP_PLACEHOLDER"
+        replace: "{{ ansible_host }}"
+
     - name: Replace FLOATING_IP_PLACEHOLDER in Zulip deployment manifest
       ansible.builtin.replace:
         path: "{{ manifest_dest }}/zulip/zulip.yaml"
         regexp: "FLOATING_IP_PLACEHOLDER"
         replace: "{{ ansible_host }}"
+        # Replaces all occurrences: SETTING_EXTERNAL_HOST, SETTING_CSRF_TRUSTED_ORIGINS, SETTING_ALLOWED_HOSTS
 
     - name: Replace S3_ENDPOINT_PLACEHOLDER in Zulip manifest
       ansible.builtin.replace:
@@ -130,32 +137,59 @@
         kubectl create secret generic mlflow-credentials \
           --namespace platform \
           --from-literal=MLFLOW_POSTGRES_PASSWORD="{{ vault_mlflow_db_password }}" \
-          --from-literal=AWS_ACCESS_KEY_ID="{{ vault_chameleon_ec2_access }}" \
-          --from-literal=AWS_SECRET_ACCESS_KEY="{{ vault_chameleon_ec2_secret }}" \
           --dry-run=client -o yaml | kubectl apply -f -
       environment:
         KUBECONFIG: "{{ kubeconfig }}"
       no_log: true
       changed_when: true
 
-    - name: Create minio-credentials secret (namespace platform)
-      ansible.builtin.shell: |
-        kubectl create secret generic minio-credentials \
-          --namespace platform \
-          --from-literal=MINIO_ROOT_USER="{{ vault_minio_root_user }}" \
-          --from-literal=MINIO_ROOT_PASSWORD="{{ vault_minio_root_password }}" \
-          --dry-run=client -o yaml | kubectl apply -f -
-      environment:
-        KUBECONFIG: "{{ kubeconfig }}"
-      no_log: true
-      changed_when: true
-
-    # We also need the mlflow DB password available for the postgres init script
+    # mlflow DB password for postgres initdb
     - name: Create mlflow-db-credentials secret (namespace zulip, used by postgres initdb)
       ansible.builtin.shell: |
         kubectl create secret generic mlflow-db-credentials \
           --namespace zulip \
           --from-literal=MLFLOW_POSTGRES_PASSWORD="{{ vault_mlflow_db_password }}" \
+          --dry-run=client -o yaml | kubectl apply -f -
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      no_log: true
+      changed_when: true
+
+    # chatsentry DB password for postgres initdb
+    - name: Create chatsentry-db-credentials secret (namespace zulip, used by postgres initdb)
+      ansible.builtin.shell: |
+        kubectl create secret generic chatsentry-db-credentials \
+          --namespace zulip \
+          --from-literal=CHATSENTRY_POSTGRES_PASSWORD="{{ vault_chatsentry_db_password }}" \
+          --dry-run=client -o yaml | kubectl apply -f -
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      no_log: true
+      changed_when: true
+
+    # zulip bot credentials (namespace platform)
+    # ZULIP_BOT_EMAIL and ZULIP_BOT_API_KEY are obtained by creating a bot in
+    # Zulip admin (Settings → Bots → Add bot) after the realm is created.
+    - name: Create zulip-bot-credentials secret (namespace platform)
+      ansible.builtin.shell: |
+        kubectl create secret generic zulip-bot-credentials \
+          --namespace platform \
+          --from-literal=ZULIP_BOT_EMAIL="{{ vault_zulip_bot_email }}" \
+          --from-literal=ZULIP_BOT_API_KEY="{{ vault_zulip_bot_api_key }}" \
+          --dry-run=client -o yaml | kubectl apply -f -
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      no_log: true
+      changed_when: true
+
+    # chatsentry API credentials (namespace platform)
+    - name: Create chatsentry-credentials secret (namespace platform)
+      ansible.builtin.shell: |
+        kubectl create secret generic chatsentry-credentials \
+          --namespace platform \
+          --from-literal=DATABASE_URL="postgresql://chatsentry_user:{{ vault_chatsentry_db_password }}@postgres.zulip.svc.cluster.local:5432/chatsentry" \
+          --from-literal=S3_ACCESS_KEY="{{ vault_chameleon_ec2_access }}" \
+          --from-literal=S3_SECRET_KEY="{{ vault_chameleon_ec2_secret }}" \
           --dry-run=client -o yaml | kubectl apply -f -
       environment:
         KUBECONFIG: "{{ kubeconfig }}"
@@ -195,27 +229,63 @@
         KUBECONFIG: "{{ kubeconfig }}"
       changed_when: true
 
-    - name: Apply MinIO
-      ansible.builtin.shell: kubectl apply -f {{ manifest_dest }}/platform/minio.yaml
-      environment:
-        KUBECONFIG: "{{ kubeconfig }}"
-      changed_when: true
-
-    - name: Wait for MinIO to be ready
-      ansible.builtin.shell: |
-        kubectl rollout status deployment/minio -n platform --timeout=120s
-      environment:
-        KUBECONFIG: "{{ kubeconfig }}"
-      changed_when: false
-
     - name: Apply MLflow
       ansible.builtin.shell: kubectl apply -f {{ manifest_dest }}/platform/mlflow.yaml
       environment:
         KUBECONFIG: "{{ kubeconfig }}"
       changed_when: true
 
+    - name: Apply Adminer
+      ansible.builtin.shell: kubectl apply -f {{ manifest_dest }}/platform/adminer.yaml
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      changed_when: true
+
+    - name: Apply ChatSentry API
+      ansible.builtin.shell: kubectl apply -f {{ manifest_dest }}/platform/chatsentry.yaml
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      changed_when: true
+
+    - name: Apply Inference Service
+      ansible.builtin.shell: kubectl apply -f {{ manifest_dest }}/platform/inference.yaml
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      changed_when: true
+
+    - name: Apply Zulip Bot
+      ansible.builtin.shell: kubectl apply -f {{ manifest_dest }}/platform/zulip-bot.yaml
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      changed_when: true
+
     - name: Apply Zulip
       ansible.builtin.shell: kubectl apply -f {{ manifest_dest }}/zulip/zulip.yaml
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      changed_when: true
+
+    # ── TLS secret for Zulip HTTPS ingress ──────────────────────────────────────
+    # Zulip 9.x uses __Host- cookie prefix which requires HTTPS.
+    # Self-signed cert is sufficient — nginx-ingress terminates TLS,
+    # Zulip itself runs HTTP internally (DISABLE_HTTPS=True).
+    - name: Generate self-signed TLS certificate for Zulip ingress
+      ansible.builtin.shell: |
+        openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+          -keyout /tmp/zulip-tls.key -out /tmp/zulip-tls.crt \
+          -subj "/CN=*.nip.io" \
+          -addext "subjectAltName=DNS:*.nip.io"
+      args:
+        creates: /tmp/zulip-tls.crt
+      changed_when: false
+
+    - name: Create zulip-tls secret (namespace zulip)
+      ansible.builtin.shell: |
+        kubectl create secret tls zulip-tls \
+          --cert=/tmp/zulip-tls.crt \
+          --key=/tmp/zulip-tls.key \
+          --namespace zulip \
+          --dry-run=client -o yaml | kubectl apply -f -
       environment:
         KUBECONFIG: "{{ kubeconfig }}"
       changed_when: true
@@ -250,13 +320,6 @@
         KUBECONFIG: "{{ kubeconfig }}"
       changed_when: false
 
-    - name: Wait for MinIO to be ready (post-deploy check)
-      ansible.builtin.shell: |
-        kubectl rollout status deployment/minio -n platform --timeout=120s
-      environment:
-        KUBECONFIG: "{{ kubeconfig }}"
-      changed_when: false
-
     - name: Show all pods across both namespaces
       ansible.builtin.shell: |
         echo "=== zulip namespace ===" && kubectl get pods -n zulip -o wide && \
@@ -278,7 +341,8 @@
     - name: Check if Zulip realm already exists
       ansible.builtin.shell: |
         kubectl exec -n zulip deploy/zulip -- \
-          su zulip -c "/home/zulip/deployments/current/manage.py shell -c 'from zerver.models import Realm; print(Realm.objects.exists())'"
+          su zulip -c "/home/zulip/deployments/current/manage.py shell -c 'from zerver.models import Realm; print(Realm.objects.count())'" \
+          2>/dev/null | tail -1 | tr -d '[:space:]'
       environment:
         KUBECONFIG: "{{ kubeconfig }}"
       register: realm_exists
@@ -288,22 +352,29 @@
     - name: Generate Zulip realm creation link (first deploy only)
       ansible.builtin.shell: |
         kubectl exec -n zulip deploy/zulip -- \
-          su zulip -c "/home/zulip/deployments/current/manage.py generate_realm_creation_link"
+          su zulip -c "/home/zulip/deployments/current/manage.py generate_realm_creation_link" \
+          2>/dev/null | grep -oP 'https?://[a-zA-Z0-9./_-]+'
       environment:
         KUBECONFIG: "{{ kubeconfig }}"
       register: realm_link
-      when: realm_exists.stdout is not defined or 'False' in realm_exists.stdout
+      when: realm_exists.stdout == '0' or realm_exists.rc != 0
       changed_when: true
 
     - name: Print realm creation link
       ansible.builtin.debug:
-        msg: "{{ realm_link.stdout | regex_replace('^https://', 'http://') }}"
+        msg: "Realm creation link: http://{{ realm_link.stdout | regex_replace('^https?://', '') }}"
       when: realm_link.stdout is defined and realm_link.stdout != ''
+
+    - name: Realm already exists (skipping link generation)
+      ansible.builtin.debug:
+        msg: "Realm already exists — Zulip is ready at http://zulip.{{ ansible_host }}.nip.io"
+      when: realm_exists.stdout is defined and realm_exists.stdout != '0' and realm_exists.rc == 0
 
     - name: Print access URLs
       ansible.builtin.debug:
         msg:
-          - "Zulip:    http://zulip.{{ ansible_host }}.nip.io"
-          - "MLflow:   http://mlflow.{{ ansible_host }}.nip.io"
-          - "MinIO:    http://minio.{{ ansible_host }}.nip.io  (login: vault_minio_root_user / vault_minio_root_password)"
-          - "RabbitMQ: http://rabbitmq.{{ ansible_host }}.nip.io  (login: zulip / vault_rabbitmq_password)"
+          - "Zulip:      https://zulip.{{ ansible_host }}.nip.io  (self-signed cert — click Advanced > Proceed)"
+          - "MLflow:     http://mlflow.{{ ansible_host }}.nip.io"
+          - "RabbitMQ:   http://rabbitmq.{{ ansible_host }}.nip.io"
+          - "Adminer:    http://adminer.{{ ansible_host }}.nip.io  (postgres UI — server: postgres.zulip.svc.cluster.local)"
+          - "ChatSentry: http://chatsentry.{{ ansible_host }}.nip.io"

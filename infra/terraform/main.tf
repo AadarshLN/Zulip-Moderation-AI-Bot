@@ -43,7 +43,7 @@ resource "openstack_networking_floatingip_v2" "gpu_floating_ip" {
 
 resource "openstack_compute_instance_v2" "gpu_node" {
   name        = "gpu-node-${var.suffix}"
-  image_name  = "CC-Ubuntu24.04-CUDA"
+  image_name  = "CC-Ubuntu24.04-ROCm"
   flavor_name = "baremetal"
   key_pair    = var.key
 
@@ -64,8 +64,29 @@ resource "openstack_compute_instance_v2" "gpu_node" {
   EOF
 }
 
+# ── Persistent data volume (KVM@TACC Cinder) ─────────────────────────────────
+# Survives terraform destroy/recreate of the app node.
+# Mounted at /opt/local-path-provisioner — all k3s PVCs (postgres, zulip,
+# mlflow, rabbitmq) live here and persist across redeployments.
+resource "openstack_blockstorage_volume_v3" "app_data" {
+  provider    = openstack.kvm
+  name        = "app-data-${var.suffix}"
+  size        = 100
+  description = "Persistent k8s PVC storage for ${var.suffix}"
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "openstack_compute_volume_attach_v2" "app_data_attach" {
+  provider    = openstack.kvm
+  instance_id = openstack_compute_instance_v2.app_node.id
+  volume_id   = openstack_blockstorage_volume_v3.app_data.id
+}
+
 # ── App node (KVM@TACC, general-purpose) ─────────────────────────────────────
-# Runs all services: Zulip, PostgreSQL, MLflow, MinIO, etc.
+# Runs all services: Zulip, PostgreSQL, MLflow, etc.
 # k3s server (control plane + worker). Hosts the public floating IP.
 
 # Allow k3s API server (6443) and Flannel VXLAN (8472) from GPU node
@@ -104,6 +125,7 @@ resource "openstack_networking_port_v2" "app_port" {
   security_group_ids = [
     data.openstack_networking_secgroup_v2.kvm_allow_ssh.id,
     data.openstack_networking_secgroup_v2.kvm_allow_http.id,
+    data.openstack_networking_secgroup_v2.kvm_allow_https.id,
     openstack_networking_secgroup_v2.kvm_k3s.id,
   ]
 }
