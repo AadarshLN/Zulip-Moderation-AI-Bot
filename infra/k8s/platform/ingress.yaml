@@ -1,0 +1,132 @@
+# Ingress rules for all services using nip.io wildcard DNS.
+# nip.io resolves <anything>.<IP>.nip.io → <IP>, so no DNS setup is needed.
+#
+# Access URLs (replace FLOATING_IP with your actual IP):
+#   Zulip:       https://zulip.FLOATING_IP.nip.io  (self-signed cert)
+#   MLflow:      http://mlflow.FLOATING_IP.nip.io
+#   RabbitMQ:    http://rabbitmq.FLOATING_IP.nip.io
+#   Adminer:     http://adminer.FLOATING_IP.nip.io  (postgres UI)
+#   ChatSentry:  http://chatsentry.FLOATING_IP.nip.io
+
+# ── Zulip (namespace: zulip) ──────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: zulip-ingress
+  namespace: zulip
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+    # Zulip uses websockets for real-time updates
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    nginx.ingress.kubernetes.io/websocket-services: "zulip"
+    # Redirect HTTP to HTTPS — required for Zulip 9.x __Host- cookie prefix
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - "zulip.FLOATING_IP_PLACEHOLDER.nip.io"
+      secretName: zulip-tls
+  rules:
+    - host: "zulip.FLOATING_IP_PLACEHOLDER.nip.io"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: zulip
+                port:
+                  number: 80
+---
+# ── RabbitMQ management UI (namespace: zulip) ─────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: rabbitmq-ingress
+  namespace: zulip
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: "rabbitmq.FLOATING_IP_PLACEHOLDER.nip.io"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: rabbitmq
+                port:
+                  number: 15672
+---
+# ── MLflow (namespace: platform) ─────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: mlflow-ingress
+  namespace: platform
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: "mlflow.FLOATING_IP_PLACEHOLDER.nip.io"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: mlflow
+                port:
+                  number: 5000
+---
+# ── Adminer — PostgreSQL web UI (namespace: platform) ─────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: adminer-ingress
+  namespace: platform
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: "adminer.FLOATING_IP_PLACEHOLDER.nip.io"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: adminer
+                port:
+                  number: 8080
+---
+# ── ChatSentry API (namespace: platform) ──────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: chatsentry-ingress
+  namespace: platform
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: "chatsentry.FLOATING_IP_PLACEHOLDER.nip.io"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: chatsentry
+                port:
+                  number: 8000

@@ -283,9 +283,7 @@ def stratified_split(
     df = df.copy()
 
     # Create combined stratification label (4 classes, D-13)
-    df["label_combo"] = (
-        df["is_suicide"].astype(str) + "_" + df["is_toxicity"].astype(str)
-    )
+    df["label_combo"] = df["is_suicide"].astype(str) + "_" + df["is_toxicity"].astype(str)
 
     # Filter empty classes (DATA_ISSUES.md Issue 2: 1_1 has 0 rows)
     label_counts = df["label_combo"].value_counts()
@@ -305,8 +303,7 @@ def stratified_split(
     # Step 2: split 30% evenly into val (15%) and test (15%)
     val_df, test_df = train_test_split(
         temp_df,
-        test_size=config.TEST_SPLIT_RATIO
-        / (config.VAL_SPLIT_RATIO + config.TEST_SPLIT_RATIO),  # 0.50 for 15/15
+        test_size=config.TEST_SPLIT_RATIO / (config.VAL_SPLIT_RATIO + config.TEST_SPLIT_RATIO),  # 0.50 for 15/15
         stratify=temp_df["label_combo"],
         random_state=random_state,
     )
@@ -530,12 +527,8 @@ if __name__ == "__main__":
         conn.close()
 
     if row_count == 0:
-        logger.info(
-            "PostgreSQL messages table is empty — running initial load from MinIO CSV"
-        )
+        logger.info("PostgreSQL messages table is empty — running initial load from MinIO CSV")
         compile_initial()
     else:
-        logger.info(
-            "PostgreSQL has %d messages — running incremental compilation", row_count
-        )
+        logger.info("PostgreSQL has %d messages — running incremental compilation", row_count)
         compile_incremental()

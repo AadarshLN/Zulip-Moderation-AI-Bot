@@ -4,9 +4,7 @@ from pydantic import BaseModel, Field
 
 
 class MessagePayload(BaseModel):
-    text: str = Field(
-        ..., min_length=1, max_length=10000, description="Raw message text"
-    )
+    text: str = Field(..., min_length=1, max_length=10000, description="Raw message text")
     user_id: str = Field(..., description="UUID of the sending user")
     source: Literal["real", "synthetic"] = Field(
         default="real",
@@ -17,12 +15,8 @@ class MessagePayload(BaseModel):
 class MessageResponse(BaseModel):
     status: str = "accepted"
     message_id: str
-    raw_text: Optional[str] = Field(
-        default=None, description="Original raw message text (D-13)"
-    )
-    cleaned_text: Optional[str] = Field(
-        default=None, description="Cleaned text after middleware processing (D-13)"
-    )
+    raw_text: Optional[str] = Field(default=None, description="Original raw message text (D-13)")
+    cleaned_text: Optional[str] = Field(default=None, description="Cleaned text after middleware processing (D-13)")
 
 
 class FlagPayload(BaseModel):
@@ -34,6 +28,4 @@ class FlagPayload(BaseModel):
 class FlagResponse(BaseModel):
     status: str = "accepted"
     flag_id: str
-    reason_cleaned: Optional[str] = Field(
-        default=None, description="Cleaned reason text after middleware processing"
-    )
+    reason_cleaned: Optional[str] = Field(default=None, description="Cleaned reason text after middleware processing")

@@ -1,0 +1,180 @@
+---
+# pre_k8s.yml — Run BEFORE installing k3s on both nodes.
+# Base setup (firewall, Docker, local storage) runs on all nodes.
+# NVIDIA Container Toolkit runs only on the GPU node (k3s_agent).
+#
+# Usage:
+#   export APP_NODE_IP=$(terraform -chdir=../terraform output -raw app_node_floating_ip)
+#   export GPU_NODE_IP=$(terraform -chdir=../terraform output -raw gpu_node_floating_ip)
+#   ansible-playbook -i inventory.yml pre_k8s.yml --vault-password-file ~/.vault_pass
+
+# ── Base setup: runs on ALL nodes ─────────────────────────────────────────────
+- name: Pre-k3s base configuration (all nodes)
+  hosts: all
+  become: true
+  gather_facts: true
+
+  tasks:
+
+    # ── Firewall ────────────────────────────────────────────────────────────
+
+    - name: Disable and mask firewalld (not installed on Ubuntu, ignore if absent)
+      ansible.builtin.systemd:
+        name: firewalld
+        state: stopped
+        enabled: false
+        masked: true
+      ignore_errors: true
+
+    - name: Disable ufw (Ubuntu 24.04 firewall — would block k3s CNI ports)
+      ansible.builtin.systemd:
+        name: ufw
+        state: stopped
+        enabled: false
+      ignore_errors: true
+
+    # ── Base packages ───────────────────────────────────────────────────────
+
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Install base packages
+      ansible.builtin.apt:
+        name:
+          - git
+          - curl
+          - wget
+          - jq
+          - ca-certificates
+          - gnupg
+          - lsb-release
+        state: present
+
+    # ── Docker ──────────────────────────────────────────────────────────────
+
+    - name: Create Docker keyring directory
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: "0755"
+
+    - name: Add Docker GPG key
+      ansible.builtin.shell: |
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
+          gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+      args:
+        creates: /etc/apt/keyrings/docker.gpg
+
+    - name: Add Docker apt repository
+      ansible.builtin.shell: |
+        echo \
+          "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+          https://download.docker.com/linux/ubuntu \
+          $(lsb_release -cs) stable" | \
+          tee /etc/apt/sources.list.d/docker.list > /dev/null
+      args:
+        creates: /etc/apt/sources.list.d/docker.list
+
+    - name: Install Docker
+      ansible.builtin.apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+        state: present
+        update_cache: true
+
+    - name: Enable and start Docker service
+      ansible.builtin.systemd:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Add cc user to docker group
+      ansible.builtin.user:
+        name: cc
+        groups: docker
+        append: true
+
+    - name: Write Docker daemon config
+      ansible.builtin.copy:
+        dest: /etc/docker/daemon.json
+        content: |
+          {
+            "log-driver": "json-file",
+            "log-opts": {
+              "max-size": "10m",
+              "max-file": "3"
+            }
+          }
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Restart Docker to apply daemon config
+      ansible.builtin.systemd:
+        name: docker
+        state: restarted
+
+    # ── Local storage directory ─────────────────────────────────────────────
+
+    - name: Create local-path provisioner data directory
+      ansible.builtin.file:
+        path: "{{ local_path_data_dir }}"
+        state: directory
+        mode: "0777"
+
+    - name: Show available disk space
+      ansible.builtin.command: df -h /
+      register: df_out
+      changed_when: false
+
+    - name: Print disk info
+      ansible.builtin.debug:
+        msg: "{{ df_out.stdout }}"
+
+# ── Cinder volume mount: app-node only ───────────────────────────────────────
+- name: Mount Cinder data volume on app-node
+  hosts: k3s_server
+  become: true
+  gather_facts: true
+
+  tasks:
+
+    # The Cinder volume appears as /dev/vdb (first attached volume on KVM@TACC).
+    # Format only if no filesystem exists (idempotent).
+    - name: Check if Cinder volume has a filesystem
+      ansible.builtin.command: blkid /dev/vdb
+      register: blkid_result
+      changed_when: false
+      failed_when: false
+
+    - name: Format Cinder volume with ext4 (first attach only)
+      ansible.builtin.command: mkfs.ext4 -L app-data /dev/vdb
+      when: blkid_result.rc != 0
+
+    - name: Create mount point
+      ansible.builtin.file:
+        path: "{{ local_path_data_dir }}"
+        state: directory
+        mode: "0777"
+
+    - name: Mount Cinder volume at local-path-provisioner directory
+      ansible.builtin.mount:
+        path: "{{ local_path_data_dir }}"
+        src: /dev/vdb
+        fstype: ext4
+        opts: defaults,nofail
+        state: mounted
+
+    - name: Ensure mount point permissions after mount
+      ansible.builtin.file:
+        path: "{{ local_path_data_dir }}"
+        state: directory
+        mode: "0777"
+
+# AMD MI100 GPUs (CC-Ubuntu24.04-ROCm image) do not require a container toolkit.
+# ROCm is pre-installed on the image. GPU access in containers uses /dev/kfd and
+# /dev/dri device passthrough, which the AMD k8s-device-plugin handles automatically.

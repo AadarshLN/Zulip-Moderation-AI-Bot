@@ -74,9 +74,7 @@ def fetch_reports() -> dict[str, dict[str, str]]:
     reports = {}
 
     try:
-        objects = client.list_objects(
-            BUCKET_TRAINING, prefix="data-quality-report/", recursive=True
-        )
+        objects = client.list_objects(BUCKET_TRAINING, prefix="data-quality-report/", recursive=True)
         for obj in objects:
             if obj.object_name.endswith(".html"):
                 response = client.get_object(BUCKET_TRAINING, obj.object_name)

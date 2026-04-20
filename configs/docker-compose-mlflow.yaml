@@ -1,0 +1,20 @@
+version: "3.9"
+
+services:
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v3.9.0
+    container_name: mlflow
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./mlruns:/mlruns
+      - ./mlflow_data:/mlflow_data
+    environment:
+      MLFLOW_SERVER_ALLOWED_HOSTS: "*"
+    command: >
+      mlflow server
+      --backend-store-uri sqlite:////mlflow_data/mlflow.db
+      --default-artifact-root /mlruns
+      --host 0.0.0.0
+      --port 5000

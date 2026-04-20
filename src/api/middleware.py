@@ -55,9 +55,7 @@ class TextCleaningMiddleware(BaseHTTPMiddleware):
         self.cleaner = TextCleaner()
         self._minio_buffer: list[dict[str, Any]] = []
 
-    async def dispatch(
-        self, request: Request, call_next: RequestResponseEndpoint
-    ) -> Response:
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         """Intercept requests and clean text fields.
 
         Args:
@@ -151,9 +149,10 @@ class TextCleaningMiddleware(BaseHTTPMiddleware):
                 row = cur.fetchone()
                 user_id = row[0] if row else self._get_default_user(cur)
 
+                # TODO (Rishabh): validate `source` against allowed values ('real', 'synthetic_hf')
+                # before insert — DB CHECK constraint will reject anything else with a 500.
                 cur.execute(
-                    "INSERT INTO messages (id, user_id, text, cleaned_text, source) "
-                    "VALUES (%s, %s, %s, %s, %s)",
+                    "INSERT INTO messages (id, user_id, text, cleaned_text, source) VALUES (%s, %s, %s, %s, %s)",
                     (message_id, user_id, raw_text, cleaned_text, source),
                 )
             conn.commit()
@@ -208,9 +207,7 @@ class TextCleaningMiddleware(BaseHTTPMiddleware):
                     conn.commit()
                     logger.info("Persisted flag %s to PostgreSQL", flag_id)
                 else:
-                    logger.warning(
-                        "Skipped flag — message_id %s not found", message_input
-                    )
+                    logger.warning("Skipped flag — message_id %s not found", message_input)
         except Exception:
             conn.rollback()
             logger.exception("Failed to persist flag to PostgreSQL")
