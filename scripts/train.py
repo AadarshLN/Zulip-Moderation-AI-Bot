@@ -28,6 +28,7 @@ mp.set_sharing_strategy("file_system")
         check=True,
     )"""
 
+
 def passes_quality_gates(test_metrics: dict):
     reasons = []
 
@@ -40,9 +41,9 @@ def passes_quality_gates(test_metrics: dict):
 
     if suicide["f1"] < 0.75:
         reasons.append(f"suicide f1 too low: {suicide['f1']:.4f} < 0.75")
-    
+
     if suicide["precision"] < 0.75:
-       reasons.append(f"suicide precision too low: {suicide['precision']:.4f} < 0.75")
+        reasons.append(f"suicide precision too low: {suicide['precision']:.4f} < 0.75")
 
     # Toxicity: balanced performance
     if toxicity["f1"] < 0.80:
@@ -58,36 +59,19 @@ def passes_quality_gates(test_metrics: dict):
     return passed, reasons
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def _find_latest_dataset_dir(dataset_root: str) -> Path:
     root = Path(dataset_root)
-    
+
     if not root.exists():
-      raise FileNotFoundError(f"Root not found :{root}")
-    
+        raise FileNotFoundError(f"Root not found :{root}")
+
     subdirs = [p for p in root.iterdir() if p.is_dir() and p.name.startswith("v")]
 
     if not subdirs:
         raise FileNotFoundError(f"No dataset folders found inside: {root}")
 
     # Prefer most recently modified folder
-    latest_dir = sorted(subdirs,key=lambda p:p.name)[-1]
+    latest_dir = sorted(subdirs, key=lambda p: p.name)[-1]
     print(f"Using latest dataset folder: {latest_dir}")
     return latest_dir
 
@@ -121,17 +105,17 @@ def resolve_data_paths(cfg):
     root = data_cfg["dataset_root"]
     latest_dir = _find_latest_dataset_dir(root)
 
-    train_path = latest_dir/"train.csv"
-    test_path = latest_dir/"test.csv"
+    train_path = latest_dir / "train.csv"
+    test_path = latest_dir / "test.csv"
 
     if not train_path.exists() or not test_path.exists():
-      raise FileNotFoundError(f"train/test missing in {latest_dir}")
-    
+        raise FileNotFoundError(f"train/test missing in {latest_dir}")
+
     val_path = None
     if (latest_dir / "val.csv").exists():
-      val_path = latest_dir / "val.csv"
+        val_path = latest_dir / "val.csv"
     elif (latest_dir / "validation.csv").exists():
-      val_path = latest_dir / "validation.csv"
+        val_path = latest_dir / "validation.csv"
 
     print(f"Train: {train_path}")
     print(f"Val: {val_path}")
@@ -217,23 +201,22 @@ def collect_env_info():
     return info
 
 
-
 def build_dataloaders(cfg):
     train_path, val_path, test_path = resolve_data_paths(cfg)
     bundle = load_splits(
-    train_path,
-    val_path,
-    test_path,
+        train_path,
+        val_path,
+        test_path,
     )
 
     tokenizer = AutoTokenizer.from_pretrained(cfg["model"]["encoder_name"], use_fast=True)
 
     train_ds = MultiTaskTextDataset(bundle.train_df, tokenizer, cfg["data"]["max_length"])
     test_ds = MultiTaskTextDataset(bundle.test_df, tokenizer, cfg["data"]["max_length"])
-    
+
     val_ds = None
     if bundle.val_df is not None:
-      val_ds = MultiTaskTextDataset(bundle.val_df, tokenizer, cfg["data"]["max_length"])
+        val_ds = MultiTaskTextDataset(bundle.val_df, tokenizer, cfg["data"]["max_length"])
 
     train_loader = DataLoader(
         train_ds,
@@ -243,12 +226,12 @@ def build_dataloaders(cfg):
     )
     val_loader = None
     if val_ds is not None:
-      val_loader = DataLoader(
-      val_ds,
-      batch_size=cfg["training"]["batch_size"],
-      shuffle=False,
-      num_workers=cfg["training"].get("num_workers", 2),
-     )
+        val_loader = DataLoader(
+            val_ds,
+            batch_size=cfg["training"]["batch_size"],
+            shuffle=False,
+            num_workers=cfg["training"].get("num_workers", 2),
+        )
 
     test_loader = DataLoader(
         test_ds,
@@ -320,9 +303,8 @@ def run_tfidf_baseline(cfg):
     val_x = None
     val_y = None
     if bundle.val_df is not None:
-      val_x = bundle.val_df["text"].tolist()
-      val_y = bundle.val_df[["is_suicide", "is_toxicity"]].values
-
+        val_x = bundle.val_df["text"].tolist()
+        val_y = bundle.val_df[["is_suicide", "is_toxicity"]].values
 
     model = TfidfLogRegMultiOutput(
         max_features=cfg["baseline"]["max_features"],
@@ -339,12 +321,12 @@ def run_tfidf_baseline(cfg):
     val_metrics = None
 
     if val_x is not None:
-      val_s_prob, val_t_prob = model.predict_proba(val_x)
-      val_prob = np.stack([val_s_prob, val_t_prob], axis=1)
-      if cfg["evaluation"].get("threshold_tuning", False):
-        thresholds = tune_thresholds(val_y, val_prob)
-      val_metrics = compute_multitask_metrics(val_y, val_prob, thresholds)
-    
+        val_s_prob, val_t_prob = model.predict_proba(val_x)
+        val_prob = np.stack([val_s_prob, val_t_prob], axis=1)
+        if cfg["evaluation"].get("threshold_tuning", False):
+            thresholds = tune_thresholds(val_y, val_prob)
+        val_metrics = compute_multitask_metrics(val_y, val_prob, thresholds)
+
     test_s_prob, test_t_prob = model.predict_proba(test_x)
     test_prob = np.stack([test_s_prob, test_t_prob], axis=1)
     test_metrics = compute_multitask_metrics(test_y, test_prob, thresholds)
@@ -361,13 +343,13 @@ def run_transformer(cfg):
         dropout=cfg["model"].get("dropout", 0.1),
     ).to(device)
     resume_ckpt = os.getenv("RESUME_FROM_CHECKPOINT") or cfg["training"].get("resume_from_checkpoint")
-    
+
     print(f"RESUME_FROM_CHECKPOINT resolved to: {resume_ckpt}")
     if resume_ckpt and Path(resume_ckpt).exists():
-      print(f"Loading checkpoint from {resume_ckpt}")
-      model.load_state_dict(torch.load(resume_ckpt, map_location=device))
+        print(f"Loading checkpoint from {resume_ckpt}")
+        model.load_state_dict(torch.load(resume_ckpt, map_location=device))
     else:
-      print("No checkpoint loaded. Training from scratch.")
+        print("No checkpoint loaded. Training from scratch.")
 
     train_y = bundle.train_df[["is_suicide", "is_toxicity"]].values
     pos_counts = train_y.sum(axis=0)
@@ -427,19 +409,17 @@ def run_transformer(cfg):
             loop.set_postfix(loss=loss.item())
 
         mlflow.log_metric("train_loss", epoch_loss / max(len(train_loader), 1), step=epoch)
-        
+
         if val_loader is not None:
-          val_metrics, _, _ = evaluate_transformer(
-            model, val_loader, device, {"suicide": 0.5, "toxicity": 0.5}
-          )
-          
-          #flat_val = {f"val_{k}": v for k, v in flatten_metrics(val_metrics).items()}
-          for k,v in flatten_metrics(val_metrics).items():
-            if v is not None and not np.isnan(v):
-              mlflow.log_metric(f"val_{k}", float(v), step=epoch)
-          if val_metrics["avg_f1"] > best_val_f1:
-            best_val_f1 = val_metrics["avg_f1"]
-            torch.save(model.state_dict(), best_model_path)
+            val_metrics, _, _ = evaluate_transformer(model, val_loader, device, {"suicide": 0.5, "toxicity": 0.5})
+
+            # flat_val = {f"val_{k}": v for k, v in flatten_metrics(val_metrics).items()}
+            for k, v in flatten_metrics(val_metrics).items():
+                if v is not None and not np.isnan(v):
+                    mlflow.log_metric(f"val_{k}", float(v), step=epoch)
+            if val_metrics["avg_f1"] > best_val_f1:
+                best_val_f1 = val_metrics["avg_f1"]
+                torch.save(model.state_dict(), best_model_path)
         else:
             torch.save(model.state_dict(), best_model_path)
 
@@ -448,17 +428,17 @@ def run_transformer(cfg):
     model.load_state_dict(torch.load(best_model_path, map_location=device))
 
     thresholds = {"suicide": 0.5, "toxicity": 0.5}
-    
+
     val_metrics = None
     if val_loader is not None:
-      val_metrics, val_y, val_prob = evaluate_transformer(
-        model, val_loader, device, {"suicide": 0.5, "toxicity": 0.5}
-      )
-      if cfg["evaluation"].get("threshold_tuning", False):
-        thresholds = tune_thresholds(val_y, val_prob)
-      val_metrics, _, _ = evaluate_transformer(model, val_loader, device, thresholds)
+        val_metrics, val_y, val_prob = evaluate_transformer(
+            model, val_loader, device, {"suicide": 0.5, "toxicity": 0.5}
+        )
+        if cfg["evaluation"].get("threshold_tuning", False):
+            thresholds = tune_thresholds(val_y, val_prob)
+        val_metrics, _, _ = evaluate_transformer(model, val_loader, device, thresholds)
     test_metrics, _, _ = evaluate_transformer(model, test_loader, device, thresholds)
-    
+
     return model, train_time, thresholds, val_metrics, test_metrics, best_model_path
 
 
@@ -500,37 +480,29 @@ def main():
 
         if cfg["model"]["type"] == "tfidf_logreg":
             model, train_time, thresholds, val_metrics, test_metrics = run_tfidf_baseline(cfg)
-            #mlflow.sklearn.log_model(model.model, artifact_path="model")
+            # mlflow.sklearn.log_model(model.model, artifact_path="model")
         else:
             model, train_time, thresholds, val_metrics, test_metrics, best_model_path = run_transformer(cfg)
-            
 
         passed_gate, gate_reasons = passes_quality_gates(test_metrics)
         mlflow.log_param("quality_gate_passed", passed_gate)
         mlflow.set_tag("quality_gate_passed", str(passed_gate).lower())
-        
+
         if gate_reasons:
-          mlflow.set_tag("quality_gate_reasons", " | ".join(gate_reasons))
+            mlflow.set_tag("quality_gate_reasons", " | ".join(gate_reasons))
 
+            # mlflow.log_artifact(str(best_model_path))
+            # print(f"Model saved locally at: {best_model_path}")
 
-
-
-
-            #mlflow.log_artifact(str(best_model_path))
-            #print(f"Model saved locally at: {best_model_path}")
-
-        #mlflow.log_metric("train_time_sec", train_time)
-        #print(f"Model saved locally at: {best_model_path}") 
+        # mlflow.log_metric("train_time_sec", train_time)
+        # print(f"Model saved locally at: {best_model_path}")
         if cfg["model"]["type"] != "tfidf_logreg":
-          print(f"Model saved locally at: {best_model_path}")
-        
+            print(f"Model saved locally at: {best_model_path}")
 
-        
-        #mlflow.log_metric({f"test_{k}": v for k, v in flatten_metrics(test_metrics).items()})
+        # mlflow.log_metric({f"test_{k}": v for k, v in flatten_metrics(test_metrics).items()})
         for k, v in flatten_metrics(test_metrics).items():
-          if v is not None and not np.isnan(v):
-            mlflow.log_metric(f"test_{k}", float(v))
-
+            if v is not None and not np.isnan(v):
+                mlflow.log_metric(f"test_{k}", float(v))
 
         Path(cfg["output"]["dir"]).mkdir(parents=True, exist_ok=True)
         thresholds_path = Path(cfg["output"]["dir"]) / "thresholds.json"
@@ -546,22 +518,24 @@ def main():
         print("Thresholds:", thresholds)
         print("Validation metrics:", val_metrics)
         print("Test metrics:", test_metrics)
-        
+
         if passed_gate:
-          print("Model passed quality gates. Logging model artifact.")
-          if cfg["model"]["type"] == "tfidf_logreg":
-            mlflow.sklearn.log_model(model.model, artifact_path="model")
-          else:
-            try:
-              mlflow.pytorch.log_model(model, artifact_path="model")
-            except Exception as e:
-              print(e)
-            approved_remote = "proj09_object_store:"
-            print(f"Uploading approved checkpoint to {approved_remote}")
-            #upload_to_object_store(str(best_model_path), approved_remote)
+            print("Model passed quality gates. Logging model artifact.")
+            if cfg["model"]["type"] == "tfidf_logreg":
+                mlflow.sklearn.log_model(model.model, artifact_path="model")
+            else:
+                try:
+                    mlflow.pytorch.log_model(model, artifact_path="model")
+                except Exception as e:
+                    print(e)
+                approved_remote = "proj09_object_store:"
+                print(f"Uploading approved checkpoint to {approved_remote}")
+                # upload_to_object_store(str(best_model_path), approved_remote)
         else:
-          print("Model failed quality gates. Skipping model logging.")
-          for reason in gate_reasons:
-            print(" -", reason)
+            print("Model failed quality gates. Skipping model logging.")
+            for reason in gate_reasons:
+                print(" -", reason)
+
+
 if __name__ == "__main__":
     main()

@@ -31,6 +31,7 @@ def _clean_df(df):
     df["is_toxicity"] = df["is_toxicity"].astype(int)
     return df
 
+
 def load_splits(train_path: str, val_path: str | None, test_path: str) -> TabularDataBundle:
     train_df = _clean_df(_standardize_columns(pd.read_csv(train_path)))
     test_df = _clean_df(_standardize_columns(pd.read_csv(test_path)))
