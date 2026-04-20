@@ -1,0 +1,164 @@
+---
+# pre_k8s.yml — Run BEFORE installing k3s on both nodes.
+# Base setup (firewall, Docker, local storage) runs on all nodes.
+# NVIDIA Container Toolkit runs only on the GPU node (k3s_agent).
+#
+# Usage:
+#   export APP_NODE_IP=$(terraform -chdir=../terraform output -raw app_node_floating_ip)
+#   export GPU_NODE_IP=$(terraform -chdir=../terraform output -raw gpu_node_floating_ip)
+#   ansible-playbook -i inventory.yml pre_k8s.yml --vault-password-file ~/.vault_pass
+
+# ── Base setup: runs on ALL nodes ─────────────────────────────────────────────
+- name: Pre-k3s base configuration (all nodes)
+  hosts: all
+  become: true
+  gather_facts: true
+
+  tasks:
+
+    # ── Firewall ────────────────────────────────────────────────────────────
+
+    - name: Disable and mask firewalld (not installed on Ubuntu, ignore if absent)
+      ansible.builtin.systemd:
+        name: firewalld
+        state: stopped
+        enabled: false
+        masked: true
+      ignore_errors: true
+
+    - name: Disable ufw (Ubuntu 24.04 firewall — would block k3s CNI ports)
+      ansible.builtin.systemd:
+        name: ufw
+        state: stopped
+        enabled: false
+      ignore_errors: true
+
+    # ── Base packages ───────────────────────────────────────────────────────
+
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Install base packages
+      ansible.builtin.apt:
+        name:
+          - git
+          - curl
+          - wget
+          - jq
+          - ca-certificates
+          - gnupg
+          - lsb-release
+        state: present
+
+    # ── Docker ──────────────────────────────────────────────────────────────
+
+    - name: Create Docker keyring directory
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: "0755"
+
+    - name: Add Docker GPG key
+      ansible.builtin.shell: |
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
+          gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+      args:
+        creates: /etc/apt/keyrings/docker.gpg
+
+    - name: Add Docker apt repository
+      ansible.builtin.shell: |
+        echo \
+          "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+          https://download.docker.com/linux/ubuntu \
+          $(lsb_release -cs) stable" | \
+          tee /etc/apt/sources.list.d/docker.list > /dev/null
+      args:
+        creates: /etc/apt/sources.list.d/docker.list
+
+    - name: Install Docker
+      ansible.builtin.apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+        state: present
+        update_cache: true
+
+    - name: Enable and start Docker service
+      ansible.builtin.systemd:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Add cc user to docker group
+      ansible.builtin.user:
+        name: cc
+        groups: docker
+        append: true
+
+    - name: Write Docker daemon config
+      ansible.builtin.copy:
+        dest: /etc/docker/daemon.json
+        content: |
+          {
+            "log-driver": "json-file",
+            "log-opts": {
+              "max-size": "10m",
+              "max-file": "3"
+            }
+          }
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Restart Docker to apply daemon config
+      ansible.builtin.systemd:
+        name: docker
+        state: restarted
+
+    # ── Local storage directory ─────────────────────────────────────────────
+
+    - name: Create local-path provisioner data directory
+      ansible.builtin.file:
+        path: "{{ local_path_data_dir }}"
+        state: directory
+        mode: "0777"
+
+    - name: Show available disk space
+      ansible.builtin.command: df -h /
+      register: df_out
+      changed_when: false
+
+    - name: Print disk info
+      ansible.builtin.debug:
+        msg: "{{ df_out.stdout }}"
+
+# ── NVIDIA Container Toolkit: GPU node only ───────────────────────────────────
+- name: Install NVIDIA Container Toolkit (GPU node only)
+  hosts: k3s_agent
+  become: true
+  gather_facts: false
+
+  tasks:
+
+    - name: Add NVIDIA Container Toolkit GPG key
+      ansible.builtin.shell: |
+        curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
+          gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+      args:
+        creates: /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+
+    - name: Add NVIDIA Container Toolkit apt repository
+      ansible.builtin.shell: |
+        curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
+          sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
+          tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+      changed_when: true
+
+    - name: Install nvidia-container-toolkit
+      ansible.builtin.apt:
+        name: nvidia-container-toolkit
+        state: present
+        update_cache: true

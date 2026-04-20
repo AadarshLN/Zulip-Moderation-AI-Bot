@@ -1,0 +1,331 @@
+---
+# install_k3s.yml — Multi-node k3s cluster setup
+#
+# Architecture:
+#   app-node  (KVM@TACC, m1.xlarge)  — k3s server (control plane + worker), runs all services
+#   gpu-node  (CHI@TACC bare-metal)  — k3s agent (worker only), runs training jobs
+#
+# Scheduling:
+#   gpu-node is tainted dedicated=gpu:NoSchedule
+#   Only training jobs (which carry the toleration) schedule there
+#   All other pods naturally land on app-node
+#
+# Usage:
+#   export APP_NODE_IP=$(terraform -chdir=../terraform output -raw app_node_floating_ip)
+#   export GPU_NODE_IP=$(terraform -chdir=../terraform output -raw gpu_node_floating_ip)
+#   ansible-playbook -i inventory.yml install_k3s.yml --vault-password-file ~/.vault_pass
+
+# ── Play 1: Install k3s server on app-node ────────────────────────────────────
+- name: Install k3s server (app-node)
+  hosts: k3s_server
+  become: true
+  gather_facts: true
+
+  tasks:
+
+    - name: Download and install k3s server
+      ansible.builtin.shell: |
+        curl -sfL https://get.k3s.io | \
+          INSTALL_K3S_VERSION="{{ k3s_version }}" \
+          INSTALL_K3S_EXEC="server --disable traefik --disable servicelb --write-kubeconfig-mode 644 --flannel-external-ip" \
+          sh -
+      args:
+        creates: /usr/local/bin/k3s
+
+    - name: Wait for k3s API server to be ready
+      ansible.builtin.wait_for:
+        port: 6443
+        host: 127.0.0.1
+        timeout: 120
+
+    - name: Wait for app-node to be Ready
+      ansible.builtin.shell: k3s kubectl get nodes | grep -w Ready
+      register: node_ready
+      retries: 20
+      delay: 10
+      until: node_ready.rc == 0
+      changed_when: false
+
+    # ── kubeconfig for cc user ─────────────────────────────────────────────
+
+    - name: Create .kube directory for cc user
+      ansible.builtin.file:
+        path: /home/cc/.kube
+        state: directory
+        owner: cc
+        group: cc
+        mode: "0700"
+
+    - name: Copy k3s kubeconfig to cc user
+      ansible.builtin.copy:
+        src: /etc/rancher/k3s/k3s.yaml
+        dest: /home/cc/.kube/config
+        remote_src: true
+        owner: cc
+        group: cc
+        mode: "0600"
+
+    - name: Set KUBECONFIG in cc bashrc
+      ansible.builtin.lineinfile:
+        path: /home/cc/.bashrc
+        line: 'export KUBECONFIG=/home/cc/.kube/config'
+        create: true
+
+    # ── Redirect local-path provisioner to dedicated directory ─────────────
+
+    - name: Patch local-path-config to use /opt/local-path-provisioner
+      ansible.builtin.shell: |
+        kubectl patch configmap local-path-config -n kube-system --type merge \
+          -p '{"data":{"config.json":"{\"nodePathMap\":[{\"node\":\"DEFAULT_PATH_FOR_NON_LISTED_NODES\",\"paths\":[\"{{ local_path_data_dir }}\"]}]}"}}'
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      changed_when: true
+
+    # ── Share join info with the GPU agent node ────────────────────────────
+    # Uses add_host so Play 2 can read the token and server URL.
+
+    - name: Read k3s join token
+      ansible.builtin.slurp:
+        src: /var/lib/rancher/k3s/server/node-token
+      register: k3s_token_b64
+
+    - name: Pass join info to gpu-node host vars
+      ansible.builtin.add_host:
+        name: "{{ item }}"
+        k3s_server_url: "https://{{ lookup('env', 'APP_NODE_IP') }}:6443"
+        k3s_token: "{{ k3s_token_b64.content | b64decode | trim }}"
+      loop: "{{ groups['k3s_agent'] }}"
+      changed_when: false
+
+
+# ── Play 2: Configure GPU node and join as k3s agent ─────────────────────────
+- name: Configure GPU node and join k3s cluster
+  hosts: k3s_agent
+  become: true
+  gather_facts: false
+
+  tasks:
+
+    # Write NVIDIA config.toml.tmpl BEFORE k3s agent starts so containerd
+    # picks it up on first boot. k3s merges this template with its base config.
+
+    - name: Create k3s containerd config directory
+      ansible.builtin.file:
+        path: /var/lib/rancher/k3s/agent/etc/containerd
+        state: directory
+        mode: "0755"
+
+    - name: Write NVIDIA containerd config.toml.tmpl for k3s
+      ansible.builtin.copy:
+        dest: /var/lib/rancher/k3s/agent/etc/containerd/config.toml.tmpl
+        content: |
+          {{ '{{' }} template "base" . {{ '}}' }}
+
+          [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.nvidia]
+            runtime_type = "io.containerd.runc.v2"
+          [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.nvidia.options]
+            BinaryName = "/usr/bin/nvidia-container-runtime"
+        mode: "0644"
+
+    # Always uninstall first to clear any cached server URL from prior runs.
+    # The agent stores the resolved address in /var/lib/rancher/k3s/ state files
+    # which persist across restarts and cause it to connect to the wrong host.
+    - name: Uninstall any previous k3s agent (clears cached server URL)
+      ansible.builtin.shell: /usr/local/bin/k3s-agent-uninstall.sh
+      args:
+        removes: /usr/local/bin/k3s-agent-uninstall.sh
+      ignore_errors: true
+
+    - name: Install k3s agent and join cluster
+      ansible.builtin.shell: |
+        curl -sfL https://get.k3s.io | \
+          INSTALL_K3S_VERSION="{{ k3s_version }}" \
+          K3S_URL="{{ k3s_server_url }}" \
+          K3S_TOKEN="{{ k3s_token }}" \
+          INSTALL_K3S_EXEC="agent --node-external-ip={{ ansible_host }}" \
+          sh -
+      ignore_errors: true  # systemd may report non-zero on first start; verified below
+      no_log: true
+
+    - name: Verify k3s agent service is running
+      ansible.builtin.systemd:
+        name: k3s-agent
+        state: started
+      register: agent_status
+      retries: 5
+      delay: 10
+      until: agent_status.status.ActiveState == "active"
+
+
+# ── Play 3: Post-join cluster configuration (run from app-node) ───────────────
+- name: Gather facts from all nodes (needed for hostname resolution in Play 3)
+  hosts: all
+  become: false
+  gather_facts: true
+
+- name: Post-join cluster configuration
+  hosts: k3s_server
+  become: true
+  gather_facts: false
+
+  tasks:
+
+    - name: Wait for GPU node to join and be Ready
+      ansible.builtin.shell: |
+        kubectl get nodes | grep -w Ready | wc -l
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      register: ready_count
+      retries: 30
+      delay: 10
+      until: ready_count.stdout | int >= 2
+      changed_when: false
+
+    - name: Show cluster nodes
+      ansible.builtin.shell: kubectl get nodes -o wide
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      register: nodes_out
+      changed_when: false
+
+    - name: Print node list
+      ansible.builtin.debug:
+        msg: "{{ nodes_out.stdout_lines }}"
+
+    # ── Node labels and taints ─────────────────────────────────────────────
+
+    - name: Label app-node as general worker
+      ansible.builtin.shell: |
+        kubectl label node {{ hostvars[groups['k3s_server'][0]]['ansible_hostname'] }} dedicated=general --overwrite
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      changed_when: true
+
+    - name: Label gpu-node as GPU worker
+      ansible.builtin.shell: |
+        kubectl label node {{ hostvars[groups['k3s_agent'][0]]['ansible_hostname'] }} dedicated=gpu --overwrite
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      changed_when: true
+
+    - name: Taint gpu-node so only GPU workloads schedule there
+      ansible.builtin.shell: |
+        kubectl taint node {{ hostvars[groups['k3s_agent'][0]]['ansible_hostname'] }} dedicated=gpu:NoSchedule --overwrite
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      changed_when: true
+
+    # ── NVIDIA Kubernetes configuration ───────────────────────────────────
+
+    - name: Create NVIDIA RuntimeClass
+      ansible.builtin.shell: |
+        cat <<EOF | kubectl apply -f -
+        apiVersion: node.k8s.io/v1
+        kind: RuntimeClass
+        metadata:
+          name: nvidia
+        handler: nvidia
+        EOF
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      changed_when: true
+
+    - name: Apply NVIDIA k8s-device-plugin DaemonSet
+      ansible.builtin.shell: |
+        kubectl apply -f \
+          https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/{{ nvidia_device_plugin_version | default('v0.14.5') }}/deployments/static/nvidia-device-plugin.yml
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      changed_when: true
+
+    - name: Patch NVIDIA device plugin to use nvidia RuntimeClass
+      ansible.builtin.shell: |
+        kubectl patch daemonset nvidia-device-plugin-daemonset -n kube-system \
+          -p '{"spec": {"template": {"spec": {"runtimeClassName": "nvidia"}}}}'
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      changed_when: true
+
+    - name: Pin NVIDIA device plugin to gpu-node only
+      ansible.builtin.shell: |
+        kubectl patch daemonset nvidia-device-plugin-daemonset -n kube-system \
+          --type=json \
+          -p='[{"op":"add","path":"/spec/template/spec/nodeSelector","value":{"dedicated":"gpu"}}]'
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      changed_when: true
+
+    - name: Add toleration so NVIDIA device plugin can run on tainted gpu-node
+      ansible.builtin.shell: |
+        kubectl patch daemonset nvidia-device-plugin-daemonset -n kube-system \
+          --type=json \
+          -p='[{"op":"add","path":"/spec/template/spec/tolerations","value":[{"key":"dedicated","value":"gpu","effect":"NoSchedule"}]}]'
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      changed_when: true
+
+    # ── nginx-ingress controller ───────────────────────────────────────────
+    # Must run on app-node (where the public floating IP is).
+    # hostNetwork: true binds to port 80 on app-node's host network interface.
+    # nodeSelector ensures it schedules on app-node, not the GPU node.
+
+    - name: Deploy nginx-ingress controller
+      ansible.builtin.shell: |
+        kubectl apply -f \
+          https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-{{ nginx_ingress_version }}/deploy/static/provider/cloud/deploy.yaml
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      changed_when: true
+
+    - name: Wait for nginx-ingress controller pod to be Running
+      ansible.builtin.shell: |
+        kubectl wait --namespace ingress-nginx \
+          --for=condition=ready pod \
+          --selector=app.kubernetes.io/component=controller \
+          --timeout=180s
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      register: ingress_wait
+      retries: 3
+      delay: 10
+      until: ingress_wait.rc == 0
+      changed_when: false
+
+    - name: Patch nginx-ingress to use hostNetwork
+      ansible.builtin.shell: |
+        kubectl patch deployment ingress-nginx-controller -n ingress-nginx \
+          --type=json \
+          -p='[{"op":"add","path":"/spec/template/spec/hostNetwork","value":true}]'
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      changed_when: true
+
+    - name: Pin nginx-ingress to app-node (dedicated=general label)
+      ansible.builtin.shell: |
+        kubectl patch deployment ingress-nginx-controller -n ingress-nginx \
+          --type=json \
+          -p='[{"op":"add","path":"/spec/template/spec/nodeSelector","value":{"dedicated":"general"}}]'
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      changed_when: true
+
+    - name: Wait for nginx-ingress to be ready after patches
+      ansible.builtin.shell: |
+        kubectl rollout status deployment/ingress-nginx-controller \
+          -n ingress-nginx --timeout=120s
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      changed_when: false
+
+    # ── Final status ───────────────────────────────────────────────────────
+
+    - name: Show final cluster status
+      ansible.builtin.shell: kubectl get nodes -o wide && echo "---" && kubectl get pods -A
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      register: cluster_status
+      changed_when: false
+
+    - name: Print cluster status
+      ansible.builtin.debug:
+        msg: "{{ cluster_status.stdout_lines }}"

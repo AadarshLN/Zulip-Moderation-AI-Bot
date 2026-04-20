@@ -1,0 +1,309 @@
+---
+# post_k8s.yml — Creates object store containers, K8s secrets, and deploys all services
+#
+# Usage:
+#   ansible-playbook -i inventory.yml post_k8s.yml --vault-password-file ~/.vault_pass
+#
+# Requires: APP_NODE_IP and GPU_NODE_IP env vars set from terraform output
+
+- name: Deploy platform and Zulip services on Kubernetes
+  hosts: k3s_server
+  become: false  # kubectl runs as cc user
+  gather_facts: true
+  vars:
+    kubeconfig: /home/cc/.kube/config
+    manifest_dest: /home/cc/k8s
+
+  tasks:
+
+    # ── Chameleon Object Store containers ────────────────────────────────────
+
+    - name: Create Chameleon Swift object store containers
+      ansible.builtin.shell: |
+        openstack container create {{ item }} 2>&1 || true
+      loop:
+        - "{{ os_zulip_uploads_bucket }}"
+        - "{{ os_zulip_avatars_bucket }}"
+      environment:
+        OS_CLOUD: openstack
+      delegate_to: localhost  # runs on your local machine using your clouds.yaml
+      changed_when: true
+
+    # ── Copy manifests to VM ─────────────────────────────────────────────────
+
+    - name: Create manifest destination directory
+      ansible.builtin.file:
+        path: "{{ manifest_dest }}"
+        state: directory
+        mode: "0755"
+
+    - name: Copy all k8s manifests to VM
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../k8s/"
+        dest: "{{ manifest_dest }}/"
+        mode: "0644"
+
+    # ── Substitute floating IP into manifests (must be after copy) ───────────
+
+    - name: Replace FLOATING_IP_PLACEHOLDER in ingress manifest
+      ansible.builtin.replace:
+        path: "{{ manifest_dest }}/platform/ingress.yaml"
+        regexp: "FLOATING_IP_PLACEHOLDER"
+        replace: "{{ ansible_host }}"
+
+    - name: Replace FLOATING_IP_PLACEHOLDER in Zulip deployment manifest
+      ansible.builtin.replace:
+        path: "{{ manifest_dest }}/zulip/zulip.yaml"
+        regexp: "FLOATING_IP_PLACEHOLDER"
+        replace: "{{ ansible_host }}"
+
+    - name: Replace S3_ENDPOINT_PLACEHOLDER in Zulip manifest
+      ansible.builtin.replace:
+        path: "{{ manifest_dest }}/zulip/zulip.yaml"
+        regexp: "S3_ENDPOINT_PLACEHOLDER"
+        replace: "{{ chameleon_s3_endpoint }}"
+
+    # ── Namespaces ───────────────────────────────────────────────────────────
+
+    - name: Apply namespaces
+      ansible.builtin.shell: kubectl apply -f {{ manifest_dest }}/namespaces.yaml
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      changed_when: true
+
+    # ── K8s Secrets (created inline — never written to disk as plaintext YAML) ─
+
+    - name: Create postgres-credentials secret (namespace zulip)
+      ansible.builtin.shell: |
+        kubectl create secret generic postgres-credentials \
+          --namespace zulip \
+          --from-literal=username=zulip \
+          --from-literal=password="{{ vault_postgres_password }}" \
+          --from-literal=dbname=zulip \
+          --dry-run=client -o yaml | kubectl apply -f -
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      no_log: true
+      changed_when: true
+
+    - name: Create zulip-secrets secret (namespace zulip)
+      ansible.builtin.shell: |
+        kubectl create secret generic zulip-secrets \
+          --namespace zulip \
+          --from-literal=SECRET_KEY="{{ vault_zulip_secret_key }}" \
+          --from-literal=ZULIP_ADMINISTRATOR="{{ vault_zulip_admin_email }}" \
+          --from-literal=POSTGRES_PASSWORD="{{ vault_postgres_password }}" \
+          --from-literal=RABBITMQ_PASSWORD="{{ vault_rabbitmq_password }}" \
+          --from-literal=REDIS_PASSWORD="{{ vault_redis_password }}" \
+          --from-literal=OS_ACCESS_KEY="{{ vault_chameleon_ec2_access }}" \
+          --from-literal=OS_SECRET_KEY="{{ vault_chameleon_ec2_secret }}" \
+          --dry-run=client -o yaml | kubectl apply -f -
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      no_log: true
+      changed_when: true
+
+    - name: Create rabbitmq-credentials secret (namespace zulip)
+      ansible.builtin.shell: |
+        kubectl create secret generic rabbitmq-credentials \
+          --namespace zulip \
+          --from-literal=password="{{ vault_rabbitmq_password }}" \
+          --dry-run=client -o yaml | kubectl apply -f -
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      no_log: true
+      changed_when: true
+
+    - name: Create redis-credentials secret (namespace zulip)
+      ansible.builtin.shell: |
+        kubectl create secret generic redis-credentials \
+          --namespace zulip \
+          --from-literal=password="{{ vault_redis_password }}" \
+          --dry-run=client -o yaml | kubectl apply -f -
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      no_log: true
+      changed_when: true
+
+    - name: Create mlflow-credentials secret (namespace platform)
+      ansible.builtin.shell: |
+        kubectl create secret generic mlflow-credentials \
+          --namespace platform \
+          --from-literal=MLFLOW_POSTGRES_PASSWORD="{{ vault_mlflow_db_password }}" \
+          --from-literal=AWS_ACCESS_KEY_ID="{{ vault_chameleon_ec2_access }}" \
+          --from-literal=AWS_SECRET_ACCESS_KEY="{{ vault_chameleon_ec2_secret }}" \
+          --dry-run=client -o yaml | kubectl apply -f -
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      no_log: true
+      changed_when: true
+
+    - name: Create minio-credentials secret (namespace platform)
+      ansible.builtin.shell: |
+        kubectl create secret generic minio-credentials \
+          --namespace platform \
+          --from-literal=MINIO_ROOT_USER="{{ vault_minio_root_user }}" \
+          --from-literal=MINIO_ROOT_PASSWORD="{{ vault_minio_root_password }}" \
+          --dry-run=client -o yaml | kubectl apply -f -
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      no_log: true
+      changed_when: true
+
+    # We also need the mlflow DB password available for the postgres init script
+    - name: Create mlflow-db-credentials secret (namespace zulip, used by postgres initdb)
+      ansible.builtin.shell: |
+        kubectl create secret generic mlflow-db-credentials \
+          --namespace zulip \
+          --from-literal=MLFLOW_POSTGRES_PASSWORD="{{ vault_mlflow_db_password }}" \
+          --dry-run=client -o yaml | kubectl apply -f -
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      no_log: true
+      changed_when: true
+
+    # ── Apply manifests in dependency order ──────────────────────────────────
+
+    - name: Apply PostgreSQL (shared DB for Zulip + MLflow)
+      ansible.builtin.shell: kubectl apply -f {{ manifest_dest }}/zulip/postgres.yaml
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      changed_when: true
+
+    - name: Wait for PostgreSQL to be ready
+      ansible.builtin.shell: |
+        kubectl rollout status deployment/postgres -n zulip --timeout=120s
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      changed_when: false
+
+    - name: Apply Memcached
+      ansible.builtin.shell: kubectl apply -f {{ manifest_dest }}/zulip/memcached.yaml
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      changed_when: true
+
+    - name: Apply RabbitMQ
+      ansible.builtin.shell: kubectl apply -f {{ manifest_dest }}/zulip/rabbitmq.yaml
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      changed_when: true
+
+    - name: Apply Redis
+      ansible.builtin.shell: kubectl apply -f {{ manifest_dest }}/zulip/redis.yaml
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      changed_when: true
+
+    - name: Apply MinIO
+      ansible.builtin.shell: kubectl apply -f {{ manifest_dest }}/platform/minio.yaml
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      changed_when: true
+
+    - name: Wait for MinIO to be ready
+      ansible.builtin.shell: |
+        kubectl rollout status deployment/minio -n platform --timeout=120s
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      changed_when: false
+
+    - name: Apply MLflow
+      ansible.builtin.shell: kubectl apply -f {{ manifest_dest }}/platform/mlflow.yaml
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      changed_when: true
+
+    - name: Apply Zulip
+      ansible.builtin.shell: kubectl apply -f {{ manifest_dest }}/zulip/zulip.yaml
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      changed_when: true
+
+    - name: Apply Ingress rules
+      ansible.builtin.shell: kubectl apply -f {{ manifest_dest }}/platform/ingress.yaml
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      changed_when: true
+
+    - name: Apply training job ConfigMap and PVC (Job itself is triggered manually)
+      ansible.builtin.shell: |
+        kubectl apply -f {{ manifest_dest }}/platform/training-job.yaml \
+          --selector='!batch.kubernetes.io/job-name'
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      changed_when: true
+
+    # ── Health checks ────────────────────────────────────────────────────────
+
+    - name: Wait for Zulip to be ready (may take 3-5 min on first boot)
+      ansible.builtin.shell: |
+        kubectl rollout status deployment/zulip -n zulip --timeout=360s
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      changed_when: false
+
+    - name: Wait for MLflow to be ready
+      ansible.builtin.shell: |
+        kubectl rollout status deployment/mlflow -n platform --timeout=180s
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      changed_when: false
+
+    - name: Wait for MinIO to be ready (post-deploy check)
+      ansible.builtin.shell: |
+        kubectl rollout status deployment/minio -n platform --timeout=120s
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      changed_when: false
+
+    - name: Show all pods across both namespaces
+      ansible.builtin.shell: |
+        echo "=== zulip namespace ===" && kubectl get pods -n zulip -o wide && \
+        echo "=== platform namespace ===" && kubectl get pods -n platform -o wide && \
+        echo "=== PVCs ===" && kubectl get pvc -A
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      register: final_status
+      changed_when: false
+
+    - name: Print final status
+      ansible.builtin.debug:
+        msg: "{{ final_status.stdout_lines }}"
+
+    # ── Zulip realm creation (first deploy only) ────────────────────────────
+    # Checks if a realm already exists before generating the link.
+    # Idempotent: skipped on redeployments where data persists.
+
+    - name: Check if Zulip realm already exists
+      ansible.builtin.shell: |
+        kubectl exec -n zulip deploy/zulip -- \
+          su zulip -c "/home/zulip/deployments/current/manage.py shell -c 'from zerver.models import Realm; print(Realm.objects.exists())'"
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      register: realm_exists
+      changed_when: false
+      ignore_errors: true
+
+    - name: Generate Zulip realm creation link (first deploy only)
+      ansible.builtin.shell: |
+        kubectl exec -n zulip deploy/zulip -- \
+          su zulip -c "/home/zulip/deployments/current/manage.py generate_realm_creation_link"
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      register: realm_link
+      when: realm_exists.stdout is not defined or 'False' in realm_exists.stdout
+      changed_when: true
+
+    - name: Print realm creation link
+      ansible.builtin.debug:
+        msg: "{{ realm_link.stdout | regex_replace('^https://', 'http://') }}"
+      when: realm_link.stdout is defined and realm_link.stdout != ''
+
+    - name: Print access URLs
+      ansible.builtin.debug:
+        msg:
+          - "Zulip:    http://zulip.{{ ansible_host }}.nip.io"
+          - "MLflow:   http://mlflow.{{ ansible_host }}.nip.io"
+          - "MinIO:    http://minio.{{ ansible_host }}.nip.io  (login: vault_minio_root_user / vault_minio_root_password)"
+          - "RabbitMQ: http://rabbitmq.{{ ansible_host }}.nip.io  (login: zulip / vault_rabbitmq_password)"

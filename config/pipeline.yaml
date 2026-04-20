@@ -1,0 +1,27 @@
+# config/pipeline.yaml — ChatSentry Data Pipeline Configuration
+# Loaded by src/utils.config at startup. Env vars override secrets.
+
+ingestion:
+  chunk_size: 50000            # Rows per CSV chunk (ingest_and_expand.py)
+  synthetic_target_rows: 10000 # Target rows for HF synthetic generation
+
+quality:
+  min_text_length: 10          # Drop rows shorter than this (DATA_ISSUES.md Issue 5)
+  max_text_length: 5000        # Truncate rows longer than this (DATA_ISSUES.md Issue 5)
+  error_pattern: "#ERROR!"     # Remove rows matching this pattern (DATA_ISSUES.md Issue 4)
+
+split:
+  train_ratio: 0.70            # Training set proportion
+  val_ratio: 0.15              # Validation set proportion
+  test_ratio: 0.15             # Test set proportion
+  random_state: 42             # Reproducibility seed
+
+buckets:
+  raw: proj09_Data                 # Chameleon S3 bucket (shared)
+  training: proj09_Data            # Same bucket — prefixes separate data
+
+traffic:
+  rps_target: 15               # Requests per second for synthetic traffic generator
+
+batch:
+  upload_size: 10000           # Rows per MinIO upload batch

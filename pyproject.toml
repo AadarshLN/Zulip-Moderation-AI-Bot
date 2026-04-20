@@ -1,0 +1,44 @@
+[project]
+name = "chatsentry-data"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.135.0",
+    "uvicorn>=0.42.0",
+    "minio>=7.2.0",
+    "psycopg2-binary>=2.9.0",
+    "pandas>=3.0.0",
+    "huggingface_hub>=1.9.0",
+    "python-dotenv>=1.2.0",
+    "pyyaml>=6.0.0",
+    "ftfy>=6.3.1",
+    "emoji>=2.15.0",
+    "markdownify>=1.2.2",
+    "scikit-learn>=1.8.0",  # stratified train/test/validation split
+    "great-expectations>=1.15.2",  # data quality validation framework
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "httpx>=0.27.0",
+    "ruff>=0.8.0",
+]
+
+[tool.ruff]
+line-length = 120
+exclude = ["*.ipynb"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v"
+markers = [
+    "infrastructure: Layer 1 — Docker service health and connectivity tests",
+    "data_flow: Layer 2 — Pipeline stage data flow tests",
+    "data_quality: Layer 3 — GE validation and quality gate tests",
+    "chaos: Layer 4 — Failure injection and resilience tests",
+    "full_pipeline: Layer 5 — Complete end-to-end pipeline tests",
+]

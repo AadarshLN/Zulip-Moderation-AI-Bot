@@ -1,0 +1,40 @@
+# ─── SECRETS TEMPLATE ────────────────────────────────────────────────────────
+# 1. Copy this file to vault.yml:
+#      cp vault.yml.example vault.yml
+# 2. Fill in all values below with real credentials.
+# 3. Encrypt BEFORE committing:
+#      ansible-vault encrypt vault.yml
+#    You will be prompted to set a vault password. Store it safely (e.g., ~/.vault_pass).
+# 4. To run playbooks with the vault:
+#      ansible-playbook ... --vault-password-file ~/.vault_pass
+# ─────────────────────────────────────────────────────────────────────────────
+
+# PostgreSQL password for the 'zulip' database user
+vault_postgres_password: "CHANGE_ME_strong_password_here"
+
+# Zulip secret key — generate with: python3 -c "import secrets; print(secrets.token_hex(32))"
+vault_zulip_secret_key: "CHANGE_ME_hex_secret_key_64_chars"
+
+# Zulip admin account
+vault_zulip_admin_email: "admin@example.com"
+vault_zulip_admin_password: "CHANGE_ME_admin_password"
+
+# RabbitMQ password for the 'zulip' vhost user
+vault_rabbitmq_password: "CHANGE_ME_rabbitmq_password"
+
+# Redis password
+vault_redis_password: "CHANGE_ME_redis_password"
+
+# MLflow PostgreSQL user password (separate user 'mlflow_user' in the shared postgres pod)
+vault_mlflow_db_password: "CHANGE_ME_mlflow_db_password"
+
+# MinIO credentials — used as the admin login for the MinIO console and by MLflow
+vault_minio_root_user: "CHANGE_ME_minio_admin_user"
+vault_minio_root_password: "CHANGE_ME_minio_strong_password"
+
+# Chameleon EC2 credentials for Object Store (Swift S3-compatible API)
+# Used by Zulip for file uploads and avatars.
+# Generate from Chameleon dashboard: Identity → EC2 Credentials → Create EC2 Credential
+# Or via CLI: openstack ec2 credentials create
+vault_chameleon_ec2_access: "CHANGE_ME_ec2_access_key"
+vault_chameleon_ec2_secret: "CHANGE_ME_ec2_secret_key"

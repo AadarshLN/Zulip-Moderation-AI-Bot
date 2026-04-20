@@ -1,0 +1,141 @@
+# ── Training Job ──────────────────────────────────────────────────────────────
+# Runs the ML training pipeline as a one-shot Kubernetes Job on the GPU node.
+#
+# Prerequisites:
+#   1. Build and push the image:
+#        docker build -t <YOUR_DOCKERHUB_USER>/zulip-moderation-trainer:latest .
+#        docker push <YOUR_DOCKERHUB_USER>/zulip-moderation-trainer:latest
+#   2. Update the image field below with your image path.
+#   3. Place your training data CSV at /opt/local-path-provisioner/training-data/
+#      on the node, or mount it via a PVC.
+#
+# To trigger a training run:
+#   kubectl apply -f training-job.yaml
+#
+# To re-run (Jobs are immutable after completion):
+#   kubectl delete job zulip-moderation-training -n platform
+#   kubectl apply -f training-job.yaml
+#
+# To monitor:
+#   kubectl logs -n platform -l job-name=zulip-moderation-training -f
+# ─────────────────────────────────────────────────────────────────────────────
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: training-config
+  namespace: platform
+data:
+  # Which experiment config and run to execute (matches configs/experiments.yaml)
+  experiment_config: "configs/experiments.yaml"
+  run_name: "hatebert_multihead"
+  mlflow_experiment_name: "zulip_moderation_bot_training"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: training-data-pvc
+  namespace: platform
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: zulip-moderation-training
+  namespace: platform
+  labels:
+    app: zulip-moderation-trainer
+spec:
+  # Do not restart on failure — fix the issue and re-apply
+  backoffLimit: 0
+  # Clean up completed/failed job pods after 1 hour
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: zulip-moderation-trainer
+    spec:
+      restartPolicy: Never
+
+      # Pin to GPU node — which carries the dedicated=gpu:NoSchedule taint.
+      # Without the toleration this pod would not schedule anywhere.
+      nodeSelector:
+        dedicated: gpu
+      tolerations:
+        - key: dedicated
+          value: gpu
+          effect: NoSchedule
+
+      containers:
+        - name: trainer
+          # Replace with your image: docker build -t <user>/zulip-moderation-trainer:latest .
+          image: kichanitish/zulip-moderation-trainer:latest
+          imagePullPolicy: Always
+
+          command:
+            - python
+            - scripts/train.py
+            - --config
+            - $(EXPERIMENT_CONFIG)
+            - --run
+            - $(RUN_NAME)
+
+          env:
+            # ── Training config (from ConfigMap) ─────────────────────────────
+            - name: EXPERIMENT_CONFIG
+              valueFrom:
+                configMapKeyRef:
+                  name: training-config
+                  key: experiment_config
+            - name: RUN_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: training-config
+                  key: run_name
+
+            # ── MLflow tracking ───────────────────────────────────────────────
+            - name: MLFLOW_TRACKING_URI
+              value: "http://mlflow.platform.svc.cluster.local:5000"
+            - name: MLFLOW_EXPERIMENT_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: training-config
+                  key: mlflow_experiment_name
+
+            # ── MLflow artifact storage ───────────────────────────────────────
+            # Artifacts are logged via the MLflow tracking server (--serve-artifacts).
+            # The server proxies all artifact operations to MinIO — no S3 credentials
+            # or endpoint needed here. Set MLFLOW_TRACKING_URI and MLflow handles the rest.
+
+            # ── CUDA visibility ───────────────────────────────────────────────
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: "all"
+            - name: NVIDIA_DRIVER_CAPABILITIES
+              value: "compute,utility"
+
+          resources:
+            requests:
+              cpu: 2000m
+              memory: 8Gi
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: 4000m
+              memory: 16Gi
+              nvidia.com/gpu: "1"
+
+          volumeMounts:
+            - name: training-data
+              mountPath: /workspace/data
+              readOnly: true
+
+      volumes:
+        - name: training-data
+          persistentVolumeClaim:
+            claimName: training-data-pvc
+

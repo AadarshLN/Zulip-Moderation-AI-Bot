@@ -1,0 +1,63 @@
+services:
+  postgres:
+    image: postgres:18
+    container_name: postgres
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: chatsentry_pg
+      POSTGRES_DB: chatsentry
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+      - ./init_sql:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d chatsentry"]
+
+  adminer:
+    image: adminer:latest
+    container_name: adminer
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "5050:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.api
+    container_name: api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://user:chatsentry_pg@postgres:5432/chatsentry
+      - S3_ENDPOINT=${S3_ENDPOINT:-chi.tacc.chameleoncloud.org:7480}
+      - S3_SECURE=${S3_SECURE:-true}
+      - MINIO_ACCESS_KEY=${S3_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${S3_SECRET_KEY}
+    volumes:
+      - hf_cache:/root/.cache/huggingface
+
+  ge-viewer:
+    build:
+      context: ..
+      dockerfile: docker/ge-viewer/Dockerfile
+    container_name: ge-viewer
+    ports:
+      - "8080:8080"
+    environment:
+      - S3_ENDPOINT=${S3_ENDPOINT:-chi.tacc.chameleoncloud.org:7480}
+      - S3_SECURE=${S3_SECURE:-true}
+      - MINIO_ACCESS_KEY=${S3_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${S3_SECRET_KEY}
+      - BUCKET_TRAINING=proj09_Data
+
+volumes:
+  postgres_data:
+  hf_cache:

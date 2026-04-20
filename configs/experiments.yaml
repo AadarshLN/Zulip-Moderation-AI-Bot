@@ -1,0 +1,94 @@
+experiment:
+  name: zulip_moderation_bot_training_v2
+
+mlflow:
+  # TODO (Aadarsh): hardcoded IP — make configurable via MLFLOW_TRACKING_URI env var so it works across deployments.
+  tracking_uri: http://mlflow.129.114.26.93.nip.io:5000
+
+data:
+  train_path: /workspace/data/processed/train.csv
+  val_path: /workspace/data/processed/val.csv
+  test_path: /workspace/data/processed/test.csv
+  max_length: 128
+
+baseline:
+  max_features: 20000
+  ngram_range: [1, 2]
+  c: 1.0
+  max_iter: 1000
+
+training:
+  batch_size: 16
+  epochs: 3
+  lr: 0.00002
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  num_workers: 0
+  weighted_bce: false
+
+evaluation:
+  threshold_tuning: false
+
+model:
+  type: transformer
+  encoder_name: GroNLP/hateBERT
+  dropout: 0.1
+
+output:
+  dir: /workspace/outputs/default
+
+runs:
+  tfidf_logreg:
+    model:
+      type: tfidf_logreg
+      encoder_name: null
+    output:
+      dir: /workspace/outputs/tfidf_logreg
+
+  distilbert_multihead:
+    model:
+      type: transformer
+      encoder_name: distilbert-base-uncased
+      dropout: 0.1
+    training:
+      weighted_bce: false
+    evaluation:
+      threshold_tuning: false
+    output:
+      dir: /workspace/outputs/distilbert_multihead
+
+  hatebert_multihead:
+    model:
+      type: transformer
+      encoder_name: GroNLP/hateBERT
+      dropout: 0.1
+    training:
+      weighted_bce: false
+    evaluation:
+      threshold_tuning: false
+    output:
+      dir: /workspace/outputs/hatebert_multihead
+
+  hatebert_weighted_bce:
+    model:
+      type: transformer
+      encoder_name: GroNLP/hateBERT
+      dropout: 0.1
+    training:
+      weighted_bce: true
+    evaluation:
+      threshold_tuning: false
+    output:
+      dir: /workspace/outputs/hatebert_weighted_bce
+
+  hatebert_threshold_tuned:
+    model:
+      type: transformer
+      encoder_name: GroNLP/hateBERT
+      dropout: 0.1
+    training:
+      weighted_bce: false
+    evaluation:
+      threshold_tuning: true
+    output:
+      dir: /workspace/outputs/hatebert_threshold_tuned
