@@ -33,6 +33,11 @@ async def text_cleaning_middleware(request, call_next):
     body: dict[str, Any] = {}
     try:
         body_bytes = await request.body()
+
+        async def receive() -> dict[str, Any]:
+            return {"type": "http.request", "body": body_bytes, "more_body": False}
+
+        request._receive = receive  # type: ignore[attr-defined]
         body = json.loads(body_bytes)
         cleaned = dict(body)
 
@@ -88,7 +93,7 @@ def _persist_message(cleaned_body: dict[str, Any]) -> None:
     raw_text = cleaned_body["raw_text"]
     cleaned_text = cleaned_body["cleaned_text"]
     source = cleaned_body.get("source", "real")
-    if source not in ("real", "synthetic_hf"):
+    if source not in ("real", "synthetic"):
         source = "real"
 
     conn = get_db_connection()

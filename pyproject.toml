@@ -16,6 +16,9 @@ dependencies = [
     "markdownify>=1.2.2",
     "scikit-learn>=1.8.0",  # stratified train/test/validation split
     "great-expectations>=1.15.2",  # data quality validation framework
+    "requests>=2.33.1",
+    "transformers>=5.5.4",
+    "torch>=2.11.0",
 ]
 
 [project.optional-dependencies]

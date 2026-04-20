@@ -9,6 +9,8 @@ Per BATCH-01 through BATCH-05.
 
 import io
 import logging
+import os
+import re
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -21,6 +23,13 @@ from src.utils.db import get_db_connection
 from src.utils.minio_client import get_minio_client
 
 logger = logging.getLogger(__name__)
+
+FAST_PATH_FULL_CLEAN_PATTERN = re.compile(
+    r"https?://|www\.|<[^>]+>|[*_~`]|"
+    r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b|"
+    r"(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}|"
+    r"@\w+|[\u2600-\u27BF\U0001F300-\U0001FAFF]|Ã|â|�"
+)
 
 # ---------------------------------------------------------------------------
 # SQL query: incremental mode with temporal leakage prevention (BATCH-02, D-04, D-05)
@@ -74,27 +83,153 @@ def apply_quality_gate(df: pd.DataFrame) -> pd.DataFrame:
     Returns:
         Filtered DataFrame.
     """
-    initial_count = len(df)
+    cleaned = df.copy()
+    initial_count = len(cleaned)
 
     if initial_count == 0:
-        return df
+        return cleaned
 
-    # Remove #ERROR! duplicates (DATA_ISSUES.md Issue 4)
-    df = df[~df["cleaned_text"].str.contains(config.QUALITY_ERROR_PATTERN, na=False)]
-
-    # Filter texts below min chars (DATA_ISSUES.md Issue 5)
-    df = df[df["cleaned_text"].str.len() >= config.QUALITY_MIN_TEXT_LENGTH]
-
-    # Cap texts above max chars (DATA_ISSUES.md Issue 5)
-    df["cleaned_text"] = df["cleaned_text"].str[: config.QUALITY_MAX_TEXT_LENGTH]
-
-    removed = initial_count - len(df)
-    logger.info(
-        "Quality gate: removed %d rows (%.2f%%)",
-        removed,
-        removed / initial_count * 100 if initial_count > 0 else 0,
+    cleaned["cleaned_text"] = (
+        cleaned["cleaned_text"]
+        .fillna("")
+        .astype(str)
+        .str.replace(r"\s+", " ", regex=True)
+        .str.strip()
     )
-    return df
+    lengths = cleaned["cleaned_text"].str.len()
+
+    error_mask = cleaned["cleaned_text"].str.contains(
+        config.QUALITY_ERROR_PATTERN,
+        na=False,
+    )
+    short_mask = lengths < config.QUALITY_MIN_TEXT_LENGTH
+    long_mask = lengths > config.QUALITY_MAX_TEXT_LENGTH
+
+    # Remove irrecoverably bad rows, then cap remaining outliers in-place.
+    cleaned = cleaned[~(error_mask | short_mask)].copy()
+    cleaned["cleaned_text"] = cleaned["cleaned_text"].str[
+        : config.QUALITY_MAX_TEXT_LENGTH
+    ]
+    cleaned = cleaned.reset_index(drop=True)
+
+    removed = initial_count - len(cleaned)
+    logger.info(
+        (
+            "Quality cleanup: removed %d rows (error=%d, short=%d), "
+            "truncated %d long rows"
+        ),
+        removed,
+        int(error_mask.sum()),
+        int(short_mask.sum()),
+        int(long_mask.sum()),
+    )
+    return cleaned
+
+
+def clean_training_texts(
+    text_series: pd.Series,
+    cleaner: TextCleaner | None = None,
+) -> pd.Series:
+    """Clean raw training text with a fast path for plain-text rows.
+
+    Most dataset rows are already plain text, so the expensive shared cleaner is
+    only applied when markup, URLs, PII, emoji, or mojibake indicators are present.
+    """
+    if cleaner is None:
+        cleaner = TextCleaner()
+
+    cleaned = (
+        text_series.fillna("")
+        .astype(str)
+        .str.replace(r"\s+", " ", regex=True)
+        .str.strip()
+    )
+    needs_full_clean = cleaned.str.contains(FAST_PATH_FULL_CLEAN_PATTERN, na=False)
+
+    if needs_full_clean.any():
+        cleaned.loc[needs_full_clean] = cleaned.loc[needs_full_clean].apply(
+            cleaner.clean
+        )
+
+    logger.info(
+        "Batch cleaning fast path: %d/%d rows used full TextCleaner",
+        int(needs_full_clean.sum()),
+        len(cleaned),
+    )
+    return cleaned
+
+
+def validate_and_upload_data_docs(
+    df: pd.DataFrame,
+    report_name: str,
+) -> tuple[bool, dict]:
+    """Run GE validation and upload a stage-specific HTML report."""
+    success, results = validate_training_data(
+        df,
+        report_label=report_name.replace("-", " ").title(),
+    )
+    if results.get("data_docs_html"):
+        upload_data_docs(
+            results["data_docs_html"],
+            config.BUCKET_TRAINING,
+            report_name=report_name,
+        )
+    return success, results
+
+
+def bulk_load_initial_messages(df: pd.DataFrame) -> None:
+    """Optionally mirror initial raw rows into PostgreSQL for later workflows."""
+    load_to_postgres = (
+        os.environ.get("INITIAL_LOAD_TO_POSTGRES", "false").lower() == "true"
+    )
+    if not load_to_postgres:
+        logger.info(
+            "Skipping PostgreSQL bulk load in initial mode; set "
+            "INITIAL_LOAD_TO_POSTGRES=true to enable it"
+        )
+        return
+
+    # Ensure a default user exists for foreign key constraint
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO users (id, username, source)
+                   VALUES ('00000000-0000-0000-0000-000000000001', 'batch_pipeline', 'real')
+                   ON CONFLICT (id) DO NOTHING"""
+            )
+            conn.commit()
+    finally:
+        conn.close()
+
+    logger.info("Bulk-loading %d rows to PostgreSQL messages table", len(df))
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            for _, row in df.iterrows():
+                cur.execute(
+                    """INSERT INTO messages (user_id, text, cleaned_text, is_suicide, is_toxicity, source)
+                       VALUES (%s, %s, %s, %s, %s, %s)
+                       RETURNING id""",
+                    (
+                        "00000000-0000-0000-0000-000000000001",
+                        row["text"],
+                        row["cleaned_text"],
+                        bool(row["is_suicide"]),
+                        bool(row.get("is_toxicity", False)),
+                        row.get("source", "real"),
+                    ),
+                )
+                msg_id = cur.fetchone()[0]
+                cur.execute(
+                    """INSERT INTO moderation (message_id, action, confidence, source)
+                       VALUES (%s, %s, %s, %s)""",
+                    (msg_id, "labeled", 1.0, row.get("source", "real")),
+                )
+        conn.commit()
+        logger.info("Bulk load complete")
+    finally:
+        conn.close()
 
 
 def select_output_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -257,9 +392,6 @@ def compile_initial() -> None:
     8. Stratified split
     9. Upload versioned snapshot to MinIO
     """
-    client = get_minio_client()
-    cleaner = TextCleaner()
-
     # Read CSV chunks from S3 (real + synthetic)
     client = get_minio_client()
     cleaner = TextCleaner()
@@ -267,7 +399,7 @@ def compile_initial() -> None:
     chunks = []
     for prefix, source_tag in [
         ("zulip-raw-messages/real/combined_dataset/", "real"),
-        ("zulip-raw-messages/synthetic/", "synthetic_local"),
+        ("zulip-raw-messages/synthetic/", "synthetic"),
     ]:
         logger.info("Reading CSV from S3 %s", prefix)
         objects = client.list_objects(
@@ -291,61 +423,22 @@ def compile_initial() -> None:
 
     # Clean text via TextCleaner
     logger.info("Running TextCleaner on text column")
-    df["cleaned_text"] = df["text"].apply(lambda t: cleaner.clean(str(t)))
+    df["cleaned_text"] = clean_training_texts(df["text"], cleaner)
 
-    # Ensure a default user exists for foreign key constraint
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """INSERT INTO users (id, username, source)
-                   VALUES ('00000000-0000-0000-0000-000000000001', 'batch_pipeline', 'real')
-                   ON CONFLICT (id) DO NOTHING"""
-            )
-            conn.commit()
-    finally:
-        conn.close()
-
-    # Bulk-load to PostgreSQL
-    logger.info("Bulk-loading %d rows to PostgreSQL messages table", len(df))
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cur:
-            for _, row in df.iterrows():
-                cur.execute(
-                    """INSERT INTO messages (user_id, text, cleaned_text, is_suicide, is_toxicity, source)
-                       VALUES (%s, %s, %s, %s, %s, %s)
-                       RETURNING id""",
-                    (
-                        "00000000-0000-0000-0000-000000000001",
-                        row["text"],
-                        row["cleaned_text"],
-                        bool(row["is_suicide"]),
-                        bool(row.get("is_toxicity", False)),
-                        "real",
-                    ),
-                )
-                msg_id = cur.fetchone()[0]
-                cur.execute(
-                    """INSERT INTO moderation (message_id, action, confidence, source)
-                       VALUES (%s, %s, %s, %s)""",
-                    (msg_id, "labeled", 1.0, "real"),
-                )
-        conn.commit()
-        logger.info("Bulk load complete")
-    finally:
-        conn.close()
+    bulk_load_initial_messages(df)
 
     # GE validation replaces SQL quality gate (D-01)
     df = select_output_columns(df)
 
     # GE validation (warn, generate HTML report)
-    success, results = validate_training_data(df)
-    if results.get("data_docs_html"):
-        upload_data_docs(results["data_docs_html"], config.BUCKET_TRAINING)
+    pre_clean_success, _ = validate_and_upload_data_docs(df, "before-cleaning")
+    logger.info("Pre-clean GE validation success=%s", pre_clean_success)
 
     # Quality gate: filter data issues before training bucket (DATA_ISSUES.md Issues 4, 5)
     df = apply_quality_gate(df)
+
+    post_clean_success, _ = validate_and_upload_data_docs(df, "after-cleaning")
+    logger.info("Post-clean GE validation success=%s", post_clean_success)
 
     # Stratified split
     train_df, val_df, test_df = stratified_split(df)
@@ -401,12 +494,14 @@ def compile_incremental() -> None:
     df = select_output_columns(df)
 
     # GE validation (warn, generate HTML report)
-    success, results = validate_training_data(df)
-    if results.get("data_docs_html"):
-        upload_data_docs(results["data_docs_html"], config.BUCKET_TRAINING)
+    pre_clean_success, _ = validate_and_upload_data_docs(df, "before-cleaning")
+    logger.info("Pre-clean GE validation success=%s", pre_clean_success)
 
     # Quality gate: filter data issues before training bucket (DATA_ISSUES.md Issues 4, 5)
     df = apply_quality_gate(df)
+
+    post_clean_success, _ = validate_and_upload_data_docs(df, "after-cleaning")
+    logger.info("Post-clean GE validation success=%s", post_clean_success)
 
     # Stratified split
     train_df, val_df, test_df = stratified_split(df)

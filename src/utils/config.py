@@ -74,6 +74,12 @@ def _env_kwargs() -> dict:
             "S3_ENDPOINT", "chi.tacc.chameleoncloud.org:7480"
         ),
         "S3_SECURE": os.environ.get("S3_SECURE", "true").lower() == "true",
+        "GPU_SERVICE_URL": os.environ.get("GPU_SERVICE_URL", "http://localhost:8001"),
+        "GPU_SERVICE_API_KEY": os.environ.get("GPU_SERVICE_API_KEY", ""),
+        "GPU_SERVICE_TIMEOUT": int(os.environ.get("GPU_SERVICE_TIMEOUT", "120")),
+        "GPU_MODEL_STAGE_DIR": os.environ.get(
+            "GPU_MODEL_STAGE_DIR", "/tmp/qwen-model-stage"
+        ),
     }
 
 
@@ -87,6 +93,10 @@ class Config:
     MINIO_SECURE: bool = False
     S3_ENDPOINT: str = "chi.tacc.chameleoncloud.org:7480"
     S3_SECURE: bool = True
+    GPU_SERVICE_URL: str = "http://localhost:8001"
+    GPU_SERVICE_API_KEY: str = ""
+    GPU_SERVICE_TIMEOUT: int = 120
+    GPU_MODEL_STAGE_DIR: str = "/tmp/qwen-model-stage"
 
     # --- Pipeline tunables (from YAML, per D-07) ---
     BUCKET_RAW: str = "proj09_Data"
@@ -104,7 +114,7 @@ class Config:
     RANDOM_STATE: int = 42
 
 
-# Module-level singleton — matches existing pattern `from src.utils.config import config`
+# Module-level singleton matching `from src.utils.config import config`
 # Priority: env vars (secrets) > YAML > dataclass defaults
 _yaml = _load_yaml_defaults()
 _kwargs = {**_yaml_to_kwargs(_yaml), **_env_kwargs()}
