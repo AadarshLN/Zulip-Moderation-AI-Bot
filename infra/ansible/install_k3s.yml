@@ -106,26 +106,8 @@
 
   tasks:
 
-    # Write NVIDIA config.toml.tmpl BEFORE k3s agent starts so containerd
-    # picks it up on first boot. k3s merges this template with its base config.
-
-    - name: Create k3s containerd config directory
-      ansible.builtin.file:
-        path: /var/lib/rancher/k3s/agent/etc/containerd
-        state: directory
-        mode: "0755"
-
-    - name: Write NVIDIA containerd config.toml.tmpl for k3s
-      ansible.builtin.copy:
-        dest: /var/lib/rancher/k3s/agent/etc/containerd/config.toml.tmpl
-        content: |
-          {{ '{{' }} template "base" . {{ '}}' }}
-
-          [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.nvidia]
-            runtime_type = "io.containerd.runc.v2"
-          [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.nvidia.options]
-            BinaryName = "/usr/bin/nvidia-container-runtime"
-        mode: "0644"
+    # AMD MI100 ROCm: no special containerd runtime config needed.
+    # The AMD device plugin passes /dev/kfd and /dev/dri as plain device mounts.
 
     # Always uninstall first to clear any cached server URL from prior runs.
     # The agent stores the resolved address in /var/lib/rancher/k3s/ state files
@@ -215,49 +197,30 @@
         KUBECONFIG: /etc/rancher/k3s/k3s.yaml
       changed_when: true
 
-    # ── NVIDIA Kubernetes configuration ───────────────────────────────────
+    # ── AMD GPU device plugin ─────────────────────────────────────────────
+    # Exposes amd.com/gpu resource for MI100 nodes.
+    # Passes /dev/kfd and /dev/dri as device mounts — no container runtime needed.
 
-    - name: Create NVIDIA RuntimeClass
-      ansible.builtin.shell: |
-        cat <<EOF | kubectl apply -f -
-        apiVersion: node.k8s.io/v1
-        kind: RuntimeClass
-        metadata:
-          name: nvidia
-        handler: nvidia
-        EOF
-      environment:
-        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
-      changed_when: true
-
-    - name: Apply NVIDIA k8s-device-plugin DaemonSet
+    - name: Apply AMD GPU device plugin DaemonSet
       ansible.builtin.shell: |
         kubectl apply -f \
-          https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/{{ nvidia_device_plugin_version | default('v0.14.5') }}/deployments/static/nvidia-device-plugin.yml
+          https://raw.githubusercontent.com/ROCm/k8s-device-plugin/master/k8s-ds-amdgpu-dp.yaml
       environment:
         KUBECONFIG: /etc/rancher/k3s/k3s.yaml
       changed_when: true
 
-    - name: Patch NVIDIA device plugin to use nvidia RuntimeClass
+    - name: Pin AMD device plugin to gpu-node only
       ansible.builtin.shell: |
-        kubectl patch daemonset nvidia-device-plugin-daemonset -n kube-system \
-          -p '{"spec": {"template": {"spec": {"runtimeClassName": "nvidia"}}}}'
-      environment:
-        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
-      changed_when: true
-
-    - name: Pin NVIDIA device plugin to gpu-node only
-      ansible.builtin.shell: |
-        kubectl patch daemonset nvidia-device-plugin-daemonset -n kube-system \
+        kubectl patch daemonset amdgpu-device-plugin-daemonset -n kube-system \
           --type=json \
           -p='[{"op":"add","path":"/spec/template/spec/nodeSelector","value":{"dedicated":"gpu"}}]'
       environment:
         KUBECONFIG: /etc/rancher/k3s/k3s.yaml
       changed_when: true
 
-    - name: Add toleration so NVIDIA device plugin can run on tainted gpu-node
+    - name: Add toleration so AMD device plugin can run on tainted gpu-node
       ansible.builtin.shell: |
-        kubectl patch daemonset nvidia-device-plugin-daemonset -n kube-system \
+        kubectl patch daemonset amdgpu-device-plugin-daemonset -n kube-system \
           --type=json \
           -p='[{"op":"add","path":"/spec/template/spec/tolerations","value":[{"key":"dedicated","value":"gpu","effect":"NoSchedule"}]}]'
       environment:

@@ -2,10 +2,11 @@
 # nip.io resolves <anything>.<IP>.nip.io → <IP>, so no DNS setup is needed.
 #
 # Access URLs (replace FLOATING_IP with your actual IP):
-#   Zulip:    http://zulip.FLOATING_IP.nip.io
-#   MLflow:   http://mlflow.FLOATING_IP.nip.io
-#   MinIO:    http://minio.FLOATING_IP.nip.io      (web console)
-#   RabbitMQ: http://rabbitmq.FLOATING_IP.nip.io   (management UI, login: zulip / <vault_rabbitmq_password>)
+#   Zulip:       https://zulip.FLOATING_IP.nip.io  (self-signed cert)
+#   MLflow:      http://mlflow.FLOATING_IP.nip.io
+#   RabbitMQ:    http://rabbitmq.FLOATING_IP.nip.io
+#   Adminer:     http://adminer.FLOATING_IP.nip.io  (postgres UI)
+#   ChatSentry:  http://chatsentry.FLOATING_IP.nip.io
 
 # ── Zulip (namespace: zulip) ──────────────────────────────────────────────────
 apiVersion: networking.k8s.io/v1
@@ -20,8 +21,14 @@ metadata:
     # Zulip uses websockets for real-time updates
     nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
     nginx.ingress.kubernetes.io/websocket-services: "zulip"
+    # Redirect HTTP to HTTPS — required for Zulip 9.x __Host- cookie prefix
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
 spec:
   ingressClassName: nginx
+  tls:
+    - hosts:
+        - "zulip.FLOATING_IP_PLACEHOLDER.nip.io"
+      secretName: zulip-tls
   rules:
     - host: "zulip.FLOATING_IP_PLACEHOLDER.nip.io"
       http:
@@ -79,26 +86,47 @@ spec:
                 port:
                   number: 5000
 ---
-# ── MinIO console (namespace: platform) ──────────────────────────────────────
+# ── Adminer — PostgreSQL web UI (namespace: platform) ─────────────────────────
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: minio-ingress
+  name: adminer-ingress
   namespace: platform
   annotations:
-    nginx.ingress.kubernetes.io/proxy-body-size: "0"
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
 spec:
   ingressClassName: nginx
   rules:
-    - host: "minio.FLOATING_IP_PLACEHOLDER.nip.io"
+    - host: "adminer.FLOATING_IP_PLACEHOLDER.nip.io"
       http:
         paths:
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: minio-console
+                name: adminer
                 port:
-                  number: 9001
+                  number: 8080
+---
+# ── ChatSentry API (namespace: platform) ──────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: chatsentry-ingress
+  namespace: platform
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: "chatsentry.FLOATING_IP_PLACEHOLDER.nip.io"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: chatsentry
+                port:
+                  number: 8000

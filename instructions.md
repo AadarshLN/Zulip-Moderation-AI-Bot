@@ -20,6 +20,28 @@ ansible-galaxy collection install community.general ansible.posix
 pip install python-openstackclient
 ```
 
+### Docker (for building service images)
+
+Docker Desktop must be installed and running. All images must be built for `linux/amd64` since the cluster runs on AMD64 hardware (Mac is ARM64).
+
+Build and push all three service images before running Ansible:
+
+```bash
+# ChatSentry API
+cd services/chatsentry
+docker buildx build --platform linux/amd64 -t kichanitish/chatsentry-api:latest --push .
+
+# Inference service
+cd services/inference
+docker buildx build --platform linux/amd64 -t kichanitish/inference:latest --push .
+
+# Zulip moderation bot
+cd services/zulip-bot
+docker buildx build --platform linux/amd64 -t kichanitish/zulip-moderation-bot:latest --push .
+```
+
+If you change code in any of these services, rebuild and push before redeploying.
+
 ### Chameleon credentials
 
 **SSH key** — confirm your Chameleon key exists:
@@ -106,6 +128,11 @@ Key values to fill in:
 | `vault_rabbitmq_password` | Choose a strong password |
 | `vault_redis_password` | Choose a strong password |
 | `vault_mlflow_db_password` | Choose a strong password |
+| `vault_chatsentry_db_password` | Choose a strong password |
+| `vault_zulip_bot_email` | Fill in after Phase 4.1 (Zulip bot creation) |
+| `vault_zulip_bot_api_key` | Fill in after Phase 4.1 (Zulip bot creation) |
+
+**Note:** `vault_zulip_bot_email` and `vault_zulip_bot_api_key` are obtained from the Zulip UI after the realm is created. Leave them as placeholders for now and fill them in before running `post_k8s.yml`.
 
 ### 2.2 Encrypt the vault
 
@@ -126,24 +153,19 @@ All commands run from `infra/ansible/` on your local machine.
 
 ### 3.1 Pre-K8s setup
 
-Disables the firewall, installs Docker, creates the local storage directory on both nodes. Installs NVIDIA Container Toolkit on the GPU node only.
+Disables the firewall, installs Docker, creates the local storage directory on both nodes.
 
 ```bash
 ansible-playbook -i inventory.yml pre_k8s.yml \
   --vault-password-file ~/.vault_pass
 ```
 
-**Verify:**
-```bash
-ssh -i ~/.ssh/id_rsa_chameleon cc@$APP_NODE_IP "docker --version"
-```
-
 ### 3.2 Install k3s
 
 Three plays in sequence:
 1. Install k3s server on app-node (control plane)
-2. Configure NVIDIA containerd runtime and join GPU node as agent
-3. Apply node labels/taints, deploy NVIDIA device plugin, deploy nginx-ingress pinned to app-node
+2. Configure AMD ROCm containerd runtime and join GPU node as agent
+3. Apply node labels/taints, deploy AMD GPU device plugin, deploy nginx-ingress pinned to app-node
 
 ```bash
 ansible-playbook -i inventory.yml install_k3s.yml \
@@ -158,26 +180,98 @@ ssh -i ~/.ssh/id_rsa_chameleon cc@$APP_NODE_IP \
 
 Expected: two nodes in `Ready` state — `app-node-proj09` (control-plane) and `gpu-node-proj09`.
 
-### 3.3 Deploy all services
+---
 
-Creates Swift containers (run locally), copies manifests to VM, creates K8s secrets, deploys all services in dependency order, and prints access URLs.
+## Phase 4 — Zulip bot setup (one-time, before post_k8s)
+
+The Zulip bot credentials must exist before deploying services. This is a two-step process: deploy Zulip first, create the bot, then deploy everything else.
+
+### 4.1 Deploy Zulip only (first-time)
 
 ```bash
 ansible-playbook -i inventory.yml post_k8s.yml \
   --vault-password-file ~/.vault_pass
 ```
 
-At the end it prints:
-```
-Zulip:  http://zulip.<IP>.nip.io
-MLflow: http://mlflow.<IP>.nip.io
+Wait for Ansible to print the realm creation link, then open it in your browser to create the admin account and realm.
+
+### 4.2 Create the moderation bot in Zulip
+
+1. Log into Zulip as admin
+2. Go to **Personal Settings → Bots → Add a new bot**
+3. Bot type: **Generic bot**
+4. Name: `chatsentry-bot` (or any name)
+5. Click **Create bot**
+6. Copy the **bot email** and **API key** shown
+
+### 4.3 Add bot credentials to vault and redeploy
+
+```bash
+cd infra/ansible
+
+# Decrypt vault
+ansible-vault decrypt group_vars/all/vault.yml --vault-password-file ~/.vault_pass
+
+# Edit — fill in the bot credentials
+nano group_vars/all/vault.yml
+# Set vault_zulip_bot_email and vault_zulip_bot_api_key
+
+# Re-encrypt
+ansible-vault encrypt group_vars/all/vault.yml --vault-password-file ~/.vault_pass
 ```
 
-And a realm creation link for first-time setup.
+### 4.4 Create the moderation stream in Zulip
+
+In the Zulip UI: click **+** next to CHANNELS → **Create a channel** → name it exactly `moderation`.
+
+This is where the bot posts flagged messages for human review.
+
+### 4.5 Grant bot administrator role
+
+1. Go to **Settings → Organization → Users**
+2. Find the bot user → click the pencil icon
+3. Change role to **Administrator**
+4. Save
+
+This allows the bot to delete other users' messages.
 
 ---
 
-## Phase 4 — Verify the deployment
+## Phase 5 — Deploy all services
+
+```bash
+ansible-playbook -i inventory.yml post_k8s.yml \
+  --vault-password-file ~/.vault_pass
+```
+
+This playbook:
+- Creates Chameleon Swift object store containers (runs locally)
+- Copies all k8s manifests to the VM
+- Substitutes the floating IP placeholder in all manifests
+- Creates all k8s secrets from vault values
+- Deploys all services in dependency order
+- Generates a self-signed TLS cert for the Zulip HTTPS ingress
+- Prints access URLs and realm creation link (first deploy only)
+
+**Access URLs** (printed at end of playbook):
+
+| Service | URL | Notes |
+|---|---|---|
+| Zulip | `https://zulip.<IP>.nip.io` | Self-signed cert — click Advanced → Proceed |
+| MLflow | `http://mlflow.<IP>.nip.io` | |
+| RabbitMQ | `http://rabbitmq.<IP>.nip.io` | |
+| Adminer | `http://adminer.<IP>.nip.io` | Postgres UI |
+| ChatSentry | `http://chatsentry.<IP>.nip.io` | |
+
+**Adminer login:**
+- Server: `postgres.zulip.svc.cluster.local`
+- Username: `zulip`
+- Password: `vault_postgres_password`
+- Database: `chatsentry` (or `zulip`)
+
+---
+
+## Phase 6 — Verify the deployment
 
 ```bash
 ssh -i ~/.ssh/id_rsa_chameleon cc@$APP_NODE_IP
@@ -190,28 +284,36 @@ kubectl get pods -n platform -o wide
 kubectl get pvc -A
 ```
 
-Open in your browser:
-- **Zulip**: `http://zulip.<FLOATING_IP>.nip.io`
-- **MLflow**: `http://mlflow.<FLOATING_IP>.nip.io`
+Verify the moderation pipeline end-to-end:
+```bash
+# Watch bot logs
+kubectl logs -n platform deploy/zulip-bot --follow
+```
 
-Use the realm creation link printed by Ansible to register the first admin account.
+Send a message in Zulip and confirm it appears in the bot logs as `Processing message`.
+
+Verify messages are being stored in ChatSentry:
+```bash
+kubectl exec -n zulip deploy/postgres -- psql -U zulip -d chatsentry \
+  -c "SELECT u.email, m.text, m.created_at FROM messages m JOIN users u ON m.user_id = u.id ORDER BY m.created_at DESC LIMIT 5;"
+```
 
 ---
 
-## Phase 5 — Run the training job
+## Phase 7 — Run the training job
 
-### 5.1 Build and push the trainer image
+### 7.1 Build and push the trainer image
 
 From the repo root:
 
 ```bash
-docker build -f train/Dockerfile -t <YOUR_DOCKERHUB_USER>/zulip-moderation-trainer:latest .
-docker push <YOUR_DOCKERHUB_USER>/zulip-moderation-trainer:latest
+docker build -f train/Dockerfile -t kichanitish/zulip-moderation-trainer:latest .
+docker push kichanitish/zulip-moderation-trainer:latest
 ```
 
 Update the image field in [infra/k8s/platform/training-job.yaml](infra/k8s/platform/training-job.yaml) if you use a different image name.
 
-### 5.2 Load training data onto the node
+### 7.2 Load training data onto the node
 
 Copy your training CSV to the node so it lands in the PVC mount path:
 
@@ -220,25 +322,21 @@ scp -i ~/.ssh/id_rsa_chameleon your_data.csv \
   cc@$APP_NODE_IP:/opt/local-path-provisioner/training-data/
 ```
 
-### 5.3 Submit the training job
+### 7.3 Submit the training job
 
 ```bash
 ssh -i ~/.ssh/id_rsa_chameleon cc@$APP_NODE_IP
-
 kubectl apply -f ~/k8s/platform/training-job.yaml
 ```
 
-### 5.4 Monitor the job
+### 7.4 Monitor the job
 
 ```bash
-# Watch pod status
 kubectl get pods -n platform -w
-
-# Stream logs
 kubectl logs -n platform -l job-name=zulip-moderation-training -f
 ```
 
-### 5.5 Re-run the job
+### 7.5 Re-run the job
 
 Kubernetes Jobs are immutable after completion. To re-run:
 
@@ -261,8 +359,7 @@ nano terraform.tfvars
 
 terraform apply
 
-# TODO (Nitish): floating_ip_out does not exist — outputs.tf defines app_node_floating_ip and gpu_node_floating_ip. Update this command.
-export ANSIBLE_HOST=$(terraform output -raw floating_ip_out)
+export APP_NODE_IP=$(terraform output -raw app_node_floating_ip)
 
 cd ../ansible
 ansible-playbook -i inventory.yml pre_k8s.yml --vault-password-file ~/.vault_pass
@@ -271,6 +368,10 @@ ansible-playbook -i inventory.yml post_k8s.yml --vault-password-file ~/.vault_pa
 ```
 
 `post_k8s.yml` is idempotent — it detects an existing Zulip realm and skips realm creation on redeployment.
+
+The Cinder volume persists across redeployments (`prevent_destroy = true` in Terraform) — all PostgreSQL data, MLflow artifacts, and PVC data survive.
+
+**Note:** After redeployment the bot credentials stay the same (stored in vault), but the `#moderation` stream and bot moderator role must already exist in the persisted Zulip data — no manual steps needed on redeployment.
 
 ---
 
@@ -283,10 +384,12 @@ kubectl logs -n zulip deploy/zulip -f
 
 **502 Bad Gateway** — nginx-ingress may not be ready yet, or Zulip is still initialising. Wait and retry.
 
-**GPU not available in training job** — check the device plugin:
+**Inference pod slow to start** — hateBERT downloads and loads on first start (~90s). The zulip-bot init container waits for it automatically.
+
+**GPU not available in training job** — check the AMD device plugin:
 ```bash
-kubectl get pods -n kube-system | grep nvidia
-kubectl describe node | grep nvidia
+kubectl get pods -n kube-system | grep amdgpu
+kubectl describe node gpu-node-proj09 | grep amd
 ```
 
 **Re-check all pod status:**
