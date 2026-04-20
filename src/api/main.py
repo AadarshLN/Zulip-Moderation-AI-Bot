@@ -225,6 +225,7 @@ async def health():
     return {"status": "ok"}
 
 
+# TODO (Rishabh): /admin/flush is publicly accessible — add auth (e.g. admin API key header) before production.
 @app.post("/admin/flush")
 async def admin_flush():
     """Force-flush the MinIO buffer for testing."""

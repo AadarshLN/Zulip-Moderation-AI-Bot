@@ -2,6 +2,7 @@ experiment:
   name: zulip_moderation_bot_training_v2
 
 mlflow:
+  # TODO (Aadarsh): hardcoded IP — make configurable via MLFLOW_TRACKING_URI env var so it works across deployments.
   tracking_uri: http://mlflow.129.114.26.93.nip.io:5000
 
 data:

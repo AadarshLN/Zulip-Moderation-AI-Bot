@@ -151,6 +151,8 @@ class TextCleaningMiddleware(BaseHTTPMiddleware):
                 row = cur.fetchone()
                 user_id = row[0] if row else self._get_default_user(cur)
 
+                # TODO (Rishabh): validate `source` against allowed values ('real', 'synthetic_hf')
+                # before insert — DB CHECK constraint will reject anything else with a 500.
                 cur.execute(
                     "INSERT INTO messages (id, user_id, text, cleaned_text, source) "
                     "VALUES (%s, %s, %s, %s, %s)",

@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS messages (
     insult BOOLEAN DEFAULT FALSE,
     identity_hate BOOLEAN DEFAULT FALSE,
     is_suicide BOOLEAN DEFAULT FALSE,
+    -- TODO (Rishabh): add is_toxicity BOOLEAN DEFAULT FALSE — referenced by middleware, dashboard, and training code but missing from schema.
     -- Source tracking (D-14)
     source VARCHAR(32) NOT NULL DEFAULT 'real'
         CHECK (source IN ('real', 'synthetic_hf')),

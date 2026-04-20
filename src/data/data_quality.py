@@ -247,6 +247,7 @@ def _generate_data_docs_html(result, suite: ExpectationSuite) -> str:
     return html
 
 
+# TODO (Rishabh): default bucket is hardcoded to "proj09_Data" — should use config.BUCKET_TRAINING instead.
 def upload_data_docs(html: str, bucket: str = "proj09_Data") -> str:
     """Upload Data Docs HTML to MinIO (D-04).
 

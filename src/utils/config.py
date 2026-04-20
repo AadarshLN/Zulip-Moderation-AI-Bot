@@ -85,6 +85,8 @@ class Config:
     MINIO_ACCESS_KEY: str = "admin"
     MINIO_SECRET_KEY: str = "chatsentry_minio"
     MINIO_SECURE: bool = False
+    # TODO (Rishabh): MINIO_ENDPOINT/MINIO_SECURE are defined here but get_minio_client() uses
+    # S3_ENDPOINT/S3_SECURE instead. Consolidate to one naming convention.
     S3_ENDPOINT: str = "chi.tacc.chameleoncloud.org:7480"
     S3_SECURE: bool = True
 

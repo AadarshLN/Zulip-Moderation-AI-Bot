@@ -14,6 +14,7 @@ with open("serving_config.yaml", "r") as f:
 app = FastAPI()
 
 # Setup Model & Tokenizer
+# TODO: MODEL_NAME is hardcoded — serving_config.yaml has a model_name key that's never read. Use config["model_name"] instead.
 MODEL_NAME = "GroNLP/hateBERT"
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME)

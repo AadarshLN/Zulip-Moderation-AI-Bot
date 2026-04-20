@@ -261,6 +261,7 @@ nano terraform.tfvars
 
 terraform apply
 
+# TODO (Nitish): floating_ip_out does not exist — outputs.tf defines app_node_floating_ip and gpu_node_floating_ip. Update this command.
 export ANSIBLE_HOST=$(terraform output -raw floating_ip_out)
 
 cd ../ansible
