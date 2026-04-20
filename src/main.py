@@ -19,6 +19,7 @@ tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME)
 
 # MODEL-LEVEL OPTIMIZATION: INT8 Quantization
+# TODO: quantize_dynamic is CPU-only — incompatible with GPU move below. Coordinate with model person.
 model = torch.quantization.quantize_dynamic(model, {torch.nn.Linear}, dtype=torch.qint8)
 
 model.eval()
