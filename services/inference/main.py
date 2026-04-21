@@ -7,37 +7,106 @@ import torch
 import torch.quantization
 import yaml
 from fastapi import FastAPI
+from minio import Minio
 from pydantic import BaseModel
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
+from transformers import AutoModel, AutoTokenizer
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
-# Load configuration from YAML
 with open("serving_config.yaml", "r") as f:
     config = yaml.safe_load(f)
 
 app = FastAPI()
 
-# Setup Model & Tokenizer
 MODEL_NAME = config["model_name"]
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME)
+S3_BUCKET = os.getenv("S3_BUCKET", "proj09_object_store")
+S3_MODEL_KEY = os.getenv("S3_MODEL_KEY", "best_model.pt")
 
-# Move to GPU/MPS if available — quantize_dynamic is CPU-only so only apply on CPU.
+
+# Matches the architecture used in scripts/train.py
+class TransformerMultiHeadModel(torch.nn.Module):
+    def __init__(self, encoder_name: str, dropout: float = 0.1):
+        super().__init__()
+        self.encoder = AutoModel.from_pretrained(encoder_name)
+        hidden_size = self.encoder.config.hidden_size
+        self.dropout = torch.nn.Dropout(dropout)
+        self.classifier = torch.nn.Linear(hidden_size, 2)
+
+    def forward(self, input_ids, attention_mask):
+        outputs = self.encoder(input_ids=input_ids, attention_mask=attention_mask)
+        cls = outputs.last_hidden_state[:, 0]
+        return self.classifier(self.dropout(cls))  # [batch, 2]: col0=suicide, col1=toxicity
+
+
+def _ensure_model(local_path: str) -> bool:
+    """Return True if model is ready at local_path — uses cache, downloads only if missing or stale."""
+    endpoint = os.getenv("S3_ENDPOINT")
+    access_key = os.getenv("S3_ACCESS_KEY")
+    secret_key = os.getenv("S3_SECRET_KEY")
+    secure = os.getenv("S3_SECURE", "true").lower() == "true"
+    if not all([endpoint, access_key, secret_key]):
+        log.warning("S3 credentials not set — cannot download model")
+        return False
+    try:
+        client = Minio(endpoint=endpoint, access_key=access_key, secret_key=secret_key, secure=secure, region="")
+        stat = client.stat_object(S3_BUCKET, S3_MODEL_KEY)
+        s3_size = stat.size
+
+        if os.path.exists(local_path) and os.path.getsize(local_path) == s3_size:
+            print(f"[1/5] Model cache hit ({local_path}, {s3_size / 1e6:.0f} MB) — skipping download", flush=True)
+            return True
+
+        print(f"[1/5] Downloading {S3_BUCKET}/{S3_MODEL_KEY} ({s3_size / 1e6:.0f} MB)...", flush=True)
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        t0 = time.time()
+        client.fget_object(S3_BUCKET, S3_MODEL_KEY, local_path)
+        print(f"[1/5] Download complete in {time.time() - t0:.1f}s", flush=True)
+        return True
+    except Exception as e:
+        log.warning("Could not download model from S3: %s", e)
+        return False
+
+
+# ── Device selection ───────────────────────────────────────────────────────────
+
 if torch.backends.mps.is_available():
     device = torch.device("mps")
 elif torch.cuda.is_available():
     device = torch.device("cuda")
 else:
     device = torch.device("cpu")
-    # INT8 quantization: CPU-only optimization, applied before moving to device
-    model = torch.quantization.quantize_dynamic(model, {torch.nn.Linear}, dtype=torch.qint8)
+
+print(f"[2/5] Using device: {device}", flush=True)
+
+# ── Model loading ──────────────────────────────────────────────────────────────
+
+print("[3/5] Loading tokenizer...", flush=True)
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+
+_ckpt_path = os.path.expanduser("~/.cache/chatsentry/best_model.pt")
+if not _ensure_model(_ckpt_path):
+    raise RuntimeError("Could not load model from S3 — set S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY")
+
+print("[4/5] Loading checkpoint into TransformerMultiHeadModel...", flush=True)
+model = TransformerMultiHeadModel(encoder_name=MODEL_NAME)
+model.load_state_dict(torch.load(_ckpt_path, map_location=device))
+MODEL_SOURCE = "trained"
 
 model.eval()
+
+if device.type == "cpu":
+    print("[5/5] Applying INT8 quantization (CPU)...", flush=True)
+    model = torch.quantization.quantize_dynamic(model, {torch.nn.Linear}, dtype=torch.qint8)
+
 model.to(device)
+print(f"Model ready — source: {MODEL_SOURCE}, device: {device}", flush=True)
+log.info("Model ready — source: %s, device: %s", MODEL_SOURCE, device)
 
 
-# Data structure matching Input JSON
+# ── Request schema ─────────────────────────────────────────────────────────────
+
+
 class ZulipMetadata(BaseModel):
     stream_id: int
     topic: str
@@ -56,18 +125,24 @@ class ZulipRequest(BaseModel):
     message: ZulipMessage
 
 
-# Prediction Logic
+# ── Inference ──────────────────────────────────────────────────────────────────
+
+
 def get_prediction(text: str):
-    inputs = tokenizer(text, return_tensors="pt", truncation=True, padding=True).to(device)
+    inputs = tokenizer(text, return_tensors="pt", truncation=True, padding=True)
+    input_ids = inputs["input_ids"].to(device)
+    attention_mask = inputs["attention_mask"].to(device)
+
     with torch.no_grad():
-        outputs = model(**inputs)
-        probs = torch.nn.functional.softmax(outputs.logits, dim=-1)
+        logits = model(input_ids=input_ids, attention_mask=attention_mask)
+        probs = torch.sigmoid(logits)
+        self_harm_score = probs[0][0].item()
         toxicity_score = probs[0][1].item()
 
-    # NOTE: hateBERT doesn't have a native self-harm head so we mock it
-    # for now. In full production, this would hit a second model head.
-    self_harm_score = toxicity_score * 0.5
     return toxicity_score, self_harm_score
+
+
+# ── DB logging ─────────────────────────────────────────────────────────────────
 
 
 def log_to_moderation(message_id: str, action: str, confidence: float) -> None:
@@ -91,9 +166,12 @@ def log_to_moderation(message_id: str, action: str, confidence: float) -> None:
         log.warning("moderation table write skipped: %s", e)
 
 
+# ── Endpoints ──────────────────────────────────────────────────────────────────
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "model_source": MODEL_SOURCE}
 
 
 @app.get("/metrics")
@@ -142,6 +220,7 @@ def metrics():
 
         return {
             "model_version": MODEL_NAME,
+            "model_source": MODEL_SOURCE,
             "total_decisions": total,
             "avg_confidence_24h": round(float(avg_24h or 0), 4),
             "avg_confidence_all_time": round(float(avg_all_time or 0), 4),
@@ -157,13 +236,8 @@ def metrics():
 async def moderate_message(request: ZulipRequest):
     start_time = time.time()
 
-    # Use the pre-cleaned text provided by the data pipeline
-    text_to_score = request.message.cleaned_text
+    toxicity, self_harm = get_prediction(request.message.cleaned_text)
 
-    # Run Inference
-    toxicity, self_harm = get_prediction(text_to_score)
-
-    # Logic Tiers
     response_action = "ALLOW"
     reason = "Safe content"
 
@@ -181,7 +255,6 @@ async def moderate_message(request: ZulipRequest):
 
     log_to_moderation(request.message_id, response_action, toxicity)
 
-    # Response (Output JSON)
     return {
         "message_id": request.message_id,
         "action": response_action,
