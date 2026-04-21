@@ -80,7 +80,7 @@ fi
 
 echo "== Building Docker image =="
 cd "$REPO_ROOT"
-sudo docker build -t "$IMAGE_NAME" .
+sudo docker build -t "$IMAGE_NAME" -f "$REPO_ROOT/Dockerfile.training" "$REPO_ROOT"
 
 echo "== Running training =="
 sudo docker run --rm -it \
