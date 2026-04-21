@@ -128,12 +128,14 @@ def main():
         if not text:
             text = random.choice(FALLBACK_MESSAGES[label])
 
-        result = client.send_message({
-            "type": "stream",
-            "to": args.stream,
-            "topic": args.topic,
-            "content": text,
-        })
+        result = client.send_message(
+            {
+                "type": "stream",
+                "to": args.stream,
+                "topic": args.topic,
+                "content": text,
+            }
+        )
 
         if result["result"] == "success":
             sent += 1
