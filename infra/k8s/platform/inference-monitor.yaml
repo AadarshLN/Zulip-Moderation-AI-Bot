@@ -1,0 +1,59 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: inference-monitor
+  namespace: platform
+spec:
+  schedule: "*/30 * * * *"  # every 30 minutes
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: inference-monitor
+          restartPolicy: OnFailure
+          containers:
+            - name: monitor
+              image: kichanitish/inference:latest
+              imagePullPolicy: Always
+              command: ["python", "monitor.py"]
+              envFrom:
+                - secretRef:
+                    name: chatsentry-secrets
+              env:
+                - name: INFERENCE_URL
+                  value: "http://inference.platform.svc.cluster.local:8000"
+                - name: K8S_DEPLOYMENT
+                  value: "deployment/inference"
+                - name: K8S_NAMESPACE
+                  value: "platform"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: inference-monitor
+  namespace: platform
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: inference-monitor
+  namespace: platform
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: inference-monitor
+  namespace: platform
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: inference-monitor
+subjects:
+  - kind: ServiceAccount
+    name: inference-monitor
+    namespace: platform

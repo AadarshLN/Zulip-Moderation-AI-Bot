@@ -92,6 +92,7 @@ print("[4/5] Loading checkpoint into TransformerMultiHeadModel...", flush=True)
 model = TransformerMultiHeadModel(encoder_name=MODEL_NAME)
 model.load_state_dict(torch.load(_ckpt_path, map_location=device))
 MODEL_SOURCE = "trained"
+MODEL_LOADED_AT = os.path.getmtime(_ckpt_path)
 
 model.eval()
 
@@ -172,6 +173,16 @@ def log_to_moderation(message_id: str, action: str, confidence: float) -> None:
 @app.get("/health")
 def health():
     return {"status": "ok", "model_source": MODEL_SOURCE}
+
+
+@app.get("/model-info")
+def model_info():
+    return {
+        "model_name": MODEL_NAME,
+        "model_source": MODEL_SOURCE,
+        "model_loaded_at_timestamp": MODEL_LOADED_AT,
+        "cache_path": _ckpt_path,
+    }
 
 
 @app.get("/metrics")
