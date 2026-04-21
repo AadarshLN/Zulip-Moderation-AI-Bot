@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import AutoTokenizer, get_linear_schedule_with_warmup
 
-from src.data import MultiTaskTextDataset, load_splits
+from src.data_utils import MultiTaskTextDataset, load_splits
 from src.metrics import compute_multitask_metrics, flatten_metrics, save_json
 from src.models import TfidfLogRegMultiOutput, TransformerMultiHeadModel
 

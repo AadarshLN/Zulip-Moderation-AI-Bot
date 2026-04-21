@@ -93,7 +93,7 @@ sudo docker run --rm -it \
   -e MLFLOW_TRACKING_URI="$MLFLOW_URI" \
   -e RESUME_FROM_CHECKPOINT="/workspace/checkpoints/best_model.pt" \
   "$IMAGE_NAME" \
-  python -u scripts/train.py --config configs/experiments.yaml --run "$RUN_NAME"
+  python -u scripts/train.py --config config/experiments.yaml --run "$RUN_NAME"
 
 echo "== Done =="
 echo "== Backing up MLflow runs and models =="
