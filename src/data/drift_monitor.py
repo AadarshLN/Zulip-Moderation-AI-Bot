@@ -15,7 +15,6 @@ import great_expectations as gx
 import pandas as pd
 from great_expectations.core.expectation_suite import ExpectationSuite
 
-from src.data.data_quality import upload_data_docs
 from src.utils.minio_client import get_minio_client
 
 logger = logging.getLogger(__name__)
@@ -99,9 +98,7 @@ def save_baseline_stats(stats: dict, version: str, bucket: str) -> str:
     return BASELINE_OBJECT
 
 
-def _check_rejection_rate(
-    batch_stats: dict, baseline_stats: dict, thresholds: dict
-) -> bool:
+def _check_rejection_rate(batch_stats: dict, baseline_stats: dict, thresholds: dict) -> bool:
     """Check if cleaning rejection rate is within tolerance of baseline."""
     baseline_rate = baseline_stats.get("cleaning_rejection_rate", 0.0)
     current_rate = batch_stats.get("cleaning_rejection_rate", 0.0)
@@ -110,9 +107,7 @@ def _check_rejection_rate(
     return abs(current_rate - baseline_rate) <= delta + 1e-9
 
 
-def _check_vocabulary_drift(
-    batch_stats: dict, baseline_stats: dict, thresholds: dict, batch_size: int
-) -> bool:
+def _check_vocabulary_drift(batch_stats: dict, baseline_stats: dict, thresholds: dict, batch_size: int) -> bool:
     """Check vocabulary drift via Jaccard similarity of top-50 token sets."""
     if batch_size < MIN_VOCAB_BATCH_SIZE:
         logger.info(
@@ -122,12 +117,8 @@ def _check_vocabulary_drift(
         )
         return True
 
-    baseline_tokens = set(
-        baseline_stats.get("vocabulary", {}).get("top_50_tokens", {}).keys()
-    )
-    batch_tokens = set(
-        batch_stats.get("vocabulary", {}).get("top_50_tokens", {}).keys()
-    )
+    baseline_tokens = set(baseline_stats.get("vocabulary", {}).get("top_50_tokens", {}).keys())
+    batch_tokens = set(batch_stats.get("vocabulary", {}).get("top_50_tokens", {}).keys())
     if not baseline_tokens or not batch_tokens:
         return True
 
@@ -135,9 +126,7 @@ def _check_vocabulary_drift(
     min_overlap = thresholds.get("vocab_overlap_min", 0.30)
     passed = jaccard >= min_overlap
     if not passed:
-        logger.warning(
-            "Vocab drift: Jaccard=%.3f < threshold=%.3f", jaccard, min_overlap
-        )
+        logger.warning("Vocab drift: Jaccard=%.3f < threshold=%.3f", jaccard, min_overlap)
     return passed
 
 
@@ -146,9 +135,7 @@ _DRIFT_EXPECTATION_LABELS = {
 }
 
 
-def compute_drift_bounds(
-    baseline_value: float, tolerance_pct: float
-) -> tuple[float, float]:
+def compute_drift_bounds(baseline_value: float, tolerance_pct: float) -> tuple[float, float]:
     """Compute acceptable [min, max] range from baseline +/- tolerance%."""
     delta = abs(baseline_value) * tolerance_pct
     return (baseline_value - delta, baseline_value + delta)
@@ -230,11 +217,7 @@ def _generate_drift_html(
         status_class = "pass" if exp_result.success else "fail"
         column = config_obj.kwargs.get("column", "")
         label = _DRIFT_EXPECTATION_LABELS.get(config_obj.type, config_obj.type)
-        rows.append(
-            f'<tr class="{status_class}">'
-            f"<td>{label}</td><td>{column}</td><td>{status}</td>"
-            f"</tr>"
-        )
+        rows.append(f'<tr class="{status_class}"><td>{label}</td><td>{column}</td><td>{status}</td></tr>')
 
     # Scalar checks rendered as plain rows (no GE backing)
     for label, passed in [
@@ -242,10 +225,7 @@ def _generate_drift_html(
         ("Vocabulary Overlap (Top-50 Tokens)", vocab_pass),
     ]:
         sc = "pass" if passed else "fail"
-        rows.append(
-            f'<tr class="{sc}"><td>{label}</td><td>batch</td>'
-            f'<td>{"PASS" if passed else "FAIL"}</td></tr>'
-        )
+        rows.append(f'<tr class="{sc}"><td>{label}</td><td>batch</td><td>{"PASS" if passed else "FAIL"}</td></tr>')
 
     html = f"""<!DOCTYPE html>
 <html>
