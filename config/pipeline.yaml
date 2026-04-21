@@ -25,3 +25,10 @@ traffic:
 
 batch:
   upload_size: 10000           # Rows per MinIO upload batch
+
+drift:
+  class_balance_tolerance: 0.50  # D-01: allow +/-50% relative shift in label means
+  text_length_tolerance: 0.30    # D-02: allow +/-30% relative shift in text length mean
+  rejection_rate_tolerance: 0.50 # D-03: allow +/-50% relative shift in gate rejection rate
+  vocab_overlap_min: 0.30        # D-04: min Jaccard similarity of top-50 tokens vs baseline
+  min_vocab_batch_size: 500      # D-04: skip vocab drift on batches smaller than this

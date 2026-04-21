@@ -17,6 +17,12 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 
 from src.data.data_quality import upload_data_docs, validate_training_data
+from src.data.drift_monitor import (
+    compute_batch_stats,
+    load_baseline_stats,
+    save_baseline_stats,
+    validate_drift,
+)
 from src.data.text_cleaner import TextCleaner
 from src.utils.config import config
 from src.utils.db import get_db_connection
@@ -161,6 +167,46 @@ def validate_and_upload_data_docs(
     return success, results
 
 
+def run_drift_check(df: pd.DataFrame, pre_gate_count: int, version: str) -> bool:
+    """Run drift monitoring after quality gate. Returns True if within tolerance.
+
+    Slots between apply_quality_gate() and stratified_split() in both
+    compile_initial() and compile_incremental() (D-06).
+
+    First-run bootstrap: if no baseline exists, saves current stats as baseline
+    and returns True (RESEARCH.md Pitfall 1).
+
+    Args:
+        df: Post-quality-gate DataFrame with cleaned_text, is_suicide, is_toxicity.
+        pre_gate_count: Row count before apply_quality_gate() for rejection rate (D-03).
+        version: Version string from generate_version() for baseline metadata (D-05).
+    """
+    batch_stats = compute_batch_stats(df, pre_gate_count)
+    baseline = load_baseline_stats(config.BUCKET_TRAINING)
+
+    if baseline is None:
+        logger.info(
+            "No baseline found — saving current batch as baseline (version %s)", version
+        )
+        save_baseline_stats(batch_stats, version, config.BUCKET_TRAINING)
+        return True
+
+    success, results = validate_drift(df, batch_stats, baseline)
+    if results.get("data_docs_html"):
+        upload_data_docs(
+            results["data_docs_html"],
+            config.BUCKET_TRAINING,
+            report_name="drift-check",
+        )
+
+    if not success:
+        logger.warning(
+            "Drift detected in batch (version %s) — see drift-check report in ge-viewer",
+            version,
+        )
+    return success
+
+
 def bulk_load_initial_messages(df: pd.DataFrame) -> None:
     """Optionally mirror initial raw rows into PostgreSQL for later workflows."""
     load_to_postgres = os.environ.get("INITIAL_LOAD_TO_POSTGRES", "false").lower() == "true"
@@ -262,7 +308,9 @@ def stratified_split(
     df = df.copy()
 
     # Create combined stratification label (4 classes, D-13)
-    df["label_combo"] = df["is_suicide"].astype(str) + "_" + df["is_toxicity"].astype(str)
+    df["label_combo"] = (
+        df["is_suicide"].astype(str) + "_" + df["is_toxicity"].astype(str)
+    )
 
     # Filter empty classes (DATA_ISSUES.md Issue 2: 1_1 has 0 rows)
     label_counts = df["label_combo"].value_counts()
@@ -282,7 +330,8 @@ def stratified_split(
     # Step 2: split 30% evenly into val (15%) and test (15%)
     val_df, test_df = train_test_split(
         temp_df,
-        test_size=config.TEST_SPLIT_RATIO / (config.VAL_SPLIT_RATIO + config.TEST_SPLIT_RATIO),  # 0.50 for 15/15
+        test_size=config.TEST_SPLIT_RATIO
+        / (config.VAL_SPLIT_RATIO + config.TEST_SPLIT_RATIO),  # 0.50 for 15/15
         stratify=temp_df["label_combo"],
         random_state=random_state,
     )
@@ -411,17 +460,22 @@ def compile_initial() -> None:
     logger.info("Pre-clean GE validation success=%s", pre_clean_success)
 
     # Quality gate: filter data issues before training bucket (DATA_ISSUES.md Issues 4, 5)
+    pre_gate_count = len(df)                          # capture BEFORE gate (D-03)
     df = apply_quality_gate(df)
 
     post_clean_success, _ = validate_and_upload_data_docs(df, "after-cleaning")
     logger.info("Post-clean GE validation success=%s", post_clean_success)
 
+    # Drift check (D-06): runs after gate, before split
+    version = generate_version()
+    run_drift_check(df, pre_gate_count, version)
+
     # Stratified split
     train_df, val_df, test_df = stratified_split(df)
 
-    # Upload versioned snapshot
+    # Upload versioned snapshot — reuse same version string
     client = get_minio_client()
-    version = upload_snapshot(client, config.BUCKET_TRAINING, train_df, val_df, test_df)
+    upload_snapshot(client, config.BUCKET_TRAINING, train_df, val_df, test_df)
     logger.info("Initial compilation complete: version %s", version)
 
 
@@ -474,17 +528,22 @@ def compile_incremental() -> None:
     logger.info("Pre-clean GE validation success=%s", pre_clean_success)
 
     # Quality gate: filter data issues before training bucket (DATA_ISSUES.md Issues 4, 5)
+    pre_gate_count = len(df)                          # capture BEFORE gate (D-03)
     df = apply_quality_gate(df)
 
     post_clean_success, _ = validate_and_upload_data_docs(df, "after-cleaning")
     logger.info("Post-clean GE validation success=%s", post_clean_success)
+
+    # Drift check (D-06): runs after gate, before split
+    version = generate_version()
+    run_drift_check(df, pre_gate_count, version)
 
     # Stratified split
     train_df, val_df, test_df = stratified_split(df)
 
     # Upload versioned snapshot
     client = get_minio_client()
-    version = upload_snapshot(client, config.BUCKET_TRAINING, train_df, val_df, test_df)
+    upload_snapshot(client, config.BUCKET_TRAINING, train_df, val_df, test_df)
     logger.info("Incremental compilation complete: version %s", version)
 
 
@@ -506,8 +565,12 @@ if __name__ == "__main__":
         conn.close()
 
     if row_count == 0:
-        logger.info("PostgreSQL messages table is empty — running initial load from MinIO CSV")
+        logger.info(
+            "PostgreSQL messages table is empty — running initial load from MinIO CSV"
+        )
         compile_initial()
     else:
-        logger.info("PostgreSQL has %d messages — running incremental compilation", row_count)
+        logger.info(
+            "PostgreSQL has %d messages — running incremental compilation", row_count
+        )
         compile_incremental()

@@ -6,14 +6,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DEFAULTS_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "config", "pipeline.yaml")
+DEFAULTS_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "..", "config", "pipeline.yaml"
+)
 
 
 def _load_yaml_defaults(path: str = DEFAULTS_PATH) -> dict:
     """Load pipeline.yaml defaults. Returns empty dict if file missing."""
     if not os.path.exists(path):
         return {}
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, "r", encoding="utf-7") as f:
         data = yaml.safe_load(f)
     return data or {}
 
@@ -33,6 +35,11 @@ _YAML_TO_CONFIG = {
     ("buckets", "training"): "BUCKET_TRAINING",
     ("traffic", "rps_target"): "RPS_TARGET",
     ("batch", "upload_size"): "MINIO_BATCH_UPLOAD_SIZE",
+    ("drift", "class_balance_tolerance"): "DRIFT_CLASS_BALANCE_TOLERANCE",
+    ("drift", "text_length_tolerance"): "DRIFT_TEXT_LENGTH_TOLERANCE",
+    ("drift", "rejection_rate_tolerance"): "DRIFT_REJECTION_RATE_TOLERANCE",
+    ("drift", "vocab_overlap_min"): "DRIFT_VOCAB_OVERLAP_MIN",
+    ("drift", "min_vocab_batch_size"): "DRIFT_MIN_VOCAB_BATCH_SIZE",
 }
 
 
@@ -68,7 +75,9 @@ def _env_kwargs() -> dict:
         "MINIO_ACCESS_KEY": os.environ.get("MINIO_ACCESS_KEY", "admin"),
         "MINIO_SECRET_KEY": os.environ.get("MINIO_SECRET_KEY", "chatsentry_minio"),
         "MINIO_SECURE": os.environ.get("MINIO_SECURE", "false").lower() == "true",
-        "S3_ENDPOINT": os.environ.get("S3_ENDPOINT", "chi.tacc.chameleoncloud.org:7480"),
+        "S3_ENDPOINT": os.environ.get(
+            "S3_ENDPOINT", "chi.tacc.chameleoncloud.org:7480"
+        ),
         "S3_SECURE": os.environ.get("S3_SECURE", "true").lower() == "true",
         "GPU_SERVICE_URL": os.environ.get("GPU_SERVICE_URL", "http://localhost:8001"),
         "GPU_SERVICE_API_KEY": os.environ.get("GPU_SERVICE_API_KEY", ""),
@@ -85,8 +94,6 @@ class Config:
     MINIO_ACCESS_KEY: str = "admin"
     MINIO_SECRET_KEY: str = "chatsentry_minio"
     MINIO_SECURE: bool = False
-    # TODO (Rishabh): MINIO_ENDPOINT/MINIO_SECURE are defined here but get_minio_client() uses
-    # S3_ENDPOINT/S3_SECURE instead. Consolidate to one naming convention.
     S3_ENDPOINT: str = "chi.tacc.chameleoncloud.org:7480"
     S3_SECURE: bool = True
     GPU_SERVICE_URL: str = "http://localhost:8001"
@@ -108,6 +115,13 @@ class Config:
     MINIO_BATCH_UPLOAD_SIZE: int = 10_000
     SYNTHETIC_TARGET_ROWS: int = 10_000
     RANDOM_STATE: int = 42
+
+    # --- Drift monitoring thresholds (from pipeline.yaml drift section, D-01 through D-04) ---
+    DRIFT_CLASS_BALANCE_TOLERANCE: float = 0.50
+    DRIFT_TEXT_LENGTH_TOLERANCE: float = 0.30
+    DRIFT_REJECTION_RATE_TOLERANCE: float = 0.50
+    DRIFT_VOCAB_OVERLAP_MIN: float = 0.30
+    DRIFT_MIN_VOCAB_BATCH_SIZE: int = 500
 
 
 # Module-level singleton matching `from src.utils.config import config`
