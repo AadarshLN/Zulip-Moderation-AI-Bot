@@ -1,13 +1,20 @@
 # ── Training Job ──────────────────────────────────────────────────────────────
 # Runs the ML training pipeline as a one-shot Kubernetes Job on the GPU node.
 #
+# Flow (mirrors scripts/retrain_latest.sh):
+#   1. init container: downloads latest versioned dataset from Chameleon S3
+#   2. init container: fetches approved checkpoint (if exists) for resume training
+#   3. main container: runs train.py — logs metrics + model artifact to MLflow
+#   4. main container: if quality gate passes, promotes best_model.pt back to S3
+#
 # Prerequisites:
-#   1. Build and push the image:
-#        docker build -t <YOUR_DOCKERHUB_USER>/zulip-moderation-trainer:latest .
-#        docker push <YOUR_DOCKERHUB_USER>/zulip-moderation-trainer:latest
-#   2. Update the image field below with your image path.
-#   3. Place your training data CSV at /opt/local-path-provisioner/training-data/
-#      on the node, or mount it via a PVC.
+#   1. Build and push the trainer image (ROCm — use Dockerfile.training at repo root):
+#        docker buildx build --platform linux/amd64 -f Dockerfile.training \
+#          -t kichanitish/zulip-moderation-trainer:latest --push .
+#   2. Upload versioned training data to Chameleon S3:
+#        aws s3 cp train.csv s3://proj09-data/zulip-training-data/v<YYYYMMDD-HHMMSS>/train.csv \
+#          --endpoint-url https://chi.tacc.chameleoncloud.org:7480
+#        (same for val.csv, test.csv)
 #
 # To trigger a training run:
 #   kubectl apply -f training-job.yaml
@@ -26,23 +33,14 @@ metadata:
   name: training-config
   namespace: platform
 data:
-  # Which experiment config and run to execute (matches config/experiments.yaml)
-  experiment_config: "config/experiments.yaml"
+  # Which experiment config and run to execute (matches configs/experiments.yaml)
+  experiment_config: "configs/experiments.yaml"
   run_name: "hatebert_multihead"
   mlflow_experiment_name: "zulip_moderation_bot_training"
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: training-data-pvc
-  namespace: platform
-spec:
-  accessModes:
-    - ReadWriteOnce
-  storageClassName: local-path
-  resources:
-    requests:
-      storage: 5Gi
+  # Chameleon S3 buckets (must exist — created by post_k8s.yml or manually)
+  s3_data_bucket: "proj09_Data"
+  s3_data_prefix: "zulip-training-data"
+  s3_model_bucket: "proj09_object_store"
 ---
 apiVersion: batch/v1
 kind: Job
@@ -64,7 +62,6 @@ spec:
       restartPolicy: Never
 
       # Pin to GPU node — which carries the dedicated=gpu:NoSchedule taint.
-      # Without the toleration this pod would not schedule anywhere.
       nodeSelector:
         dedicated: gpu
       tolerations:
@@ -72,19 +69,151 @@ spec:
           value: gpu
           effect: NoSchedule
 
+      # ── Init containers run sequentially before training ─────────────────────
+      initContainers:
+
+        # Step 1: Download the latest versioned dataset from Chameleon S3.
+        # Folder pattern: s3://<bucket>/<prefix>/v<YYYYMMDD-HHMMSS>/
+        # Outputs: /data/v<version>/train.csv, val.csv, test.csv
+        - name: fetch-data
+          image: amazon/aws-cli:2.22.35
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+
+              LATEST=$(aws s3 ls s3://$S3_DATA_BUCKET/$S3_DATA_PREFIX/ \
+                --endpoint-url $S3_ENDPOINT_URL \
+                | awk '{print $2}' \
+                | grep -E '^v[0-9]{8}' \
+                | sort | tail -1 | tr -d '/')
+
+              if [ -z "$LATEST" ]; then
+                echo "ERROR: No versioned dataset found at s3://$S3_DATA_BUCKET/$S3_DATA_PREFIX/"
+                exit 1
+              fi
+
+              echo "Downloading dataset: $LATEST"
+              aws s3 cp s3://$S3_DATA_BUCKET/$S3_DATA_PREFIX/$LATEST/ /data/$LATEST/ \
+                --endpoint-url $S3_ENDPOINT_URL --recursive
+
+              if [ ! -f "/data/$LATEST/train.csv" ]; then
+                echo "ERROR: train.csv not found after download"
+                exit 1
+              fi
+
+              echo "Dataset ready at /data/$LATEST/"
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: chatsentry-credentials
+                  key: S3_ACCESS_KEY
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: chatsentry-credentials
+                  key: S3_SECRET_KEY
+            - name: AWS_DEFAULT_REGION
+              value: "us-east-1"
+            - name: S3_ENDPOINT_URL
+              value: "https://chi.tacc.chameleoncloud.org:7480"
+            - name: S3_DATA_BUCKET
+              valueFrom:
+                configMapKeyRef:
+                  name: training-config
+                  key: s3_data_bucket
+            - name: S3_DATA_PREFIX
+              valueFrom:
+                configMapKeyRef:
+                  name: training-config
+                  key: s3_data_prefix
+          volumeMounts:
+            - name: training-data
+              mountPath: /data
+
+        # Step 2: Fetch the currently approved model checkpoint for resume training.
+        # If no checkpoint exists (first run), training starts from scratch.
+        - name: fetch-checkpoint
+          image: amazon/aws-cli:2.22.35
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+
+              if aws s3 ls s3://$S3_MODEL_BUCKET/best_model.pt \
+                  --endpoint-url $S3_ENDPOINT_URL >/dev/null 2>&1; then
+                echo "Fetching approved checkpoint..."
+                aws s3 cp s3://$S3_MODEL_BUCKET/best_model.pt /checkpoints/best_model.pt \
+                  --endpoint-url $S3_ENDPOINT_URL
+                echo "Checkpoint ready at /checkpoints/best_model.pt"
+              else
+                echo "No approved checkpoint found — training from scratch"
+              fi
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: chatsentry-credentials
+                  key: S3_ACCESS_KEY
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: chatsentry-credentials
+                  key: S3_SECRET_KEY
+            - name: AWS_DEFAULT_REGION
+              value: "us-east-1"
+            - name: S3_ENDPOINT_URL
+              value: "https://chi.tacc.chameleoncloud.org:7480"
+            - name: S3_MODEL_BUCKET
+              valueFrom:
+                configMapKeyRef:
+                  name: training-config
+                  key: s3_model_bucket
+          volumeMounts:
+            - name: checkpoints
+              mountPath: /checkpoints
+
+      # ── Main training container ───────────────────────────────────────────────
       containers:
         - name: trainer
-          # Replace with your image: docker build -t <user>/zulip-moderation-trainer:latest .
           image: kichanitish/zulip-moderation-trainer:latest
           imagePullPolicy: Always
 
           command:
-            - python
-            - scripts/train.py
-            - --config
-            - $(EXPERIMENT_CONFIG)
-            - --run
-            - $(RUN_NAME)
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+
+              echo "=== Starting training run: $RUN_NAME ==="
+              python -u scripts/train.py --config $EXPERIMENT_CONFIG --run $RUN_NAME
+
+              echo "=== Training complete. Checking quality gate... ==="
+              QUALITY_GATE="/workspace/outputs/$RUN_NAME/quality_gate.json"
+              BEST_MODEL="/workspace/outputs/$RUN_NAME/best_model.pt"
+
+              if [ -f "$QUALITY_GATE" ] && grep -q '"passed":[[:space:]]*true' "$QUALITY_GATE"; then
+                echo "Quality gate PASSED — promoting model to object store"
+                pip install awscli -q
+                SESSION_NAME="retraining_$(date +%F_%H-%M-%S)"
+                # Overwrite current approved model
+                AWS_ACCESS_KEY_ID=$S3_ACCESS_KEY \
+                AWS_SECRET_ACCESS_KEY=$S3_SECRET_KEY \
+                aws s3 cp "$BEST_MODEL" s3://$S3_MODEL_BUCKET/best_model.pt \
+                  --endpoint-url $S3_ENDPOINT_URL
+                # Save versioned backup
+                AWS_ACCESS_KEY_ID=$S3_ACCESS_KEY \
+                AWS_SECRET_ACCESS_KEY=$S3_SECRET_KEY \
+                aws s3 cp "$BEST_MODEL" \
+                  s3://$S3_MODEL_BUCKET/model_backups/$SESSION_NAME/$RUN_NAME/best_model.pt \
+                  --endpoint-url $S3_ENDPOINT_URL
+                echo "Model promoted: s3://$S3_MODEL_BUCKET/best_model.pt"
+              else
+                echo "Quality gate NOT passed — model not promoted to object store"
+              fi
 
           env:
             # ── Training config (from ConfigMap) ─────────────────────────────
@@ -108,14 +237,32 @@ spec:
                   name: training-config
                   key: mlflow_experiment_name
 
-            # ── MLflow artifact storage ───────────────────────────────────────
-            # Artifacts are logged via the MLflow tracking server (--serve-artifacts).
-            # The server proxies all artifact operations to MinIO — no S3 credentials
-            # or endpoint needed here. Set MLFLOW_TRACKING_URI and MLflow handles the rest.
+            # ── Checkpoint resumption (populated by fetch-checkpoint init container) ──
+            - name: RESUME_FROM_CHECKPOINT
+              value: "/workspace/checkpoints/best_model.pt"
 
             # ── ROCm / AMD GPU visibility ─────────────────────────────────────
             - name: HIP_VISIBLE_DEVICES
               value: "all"
+
+            # ── S3 for model promotion after quality gate ─────────────────────
+            - name: S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: chatsentry-credentials
+                  key: S3_ACCESS_KEY
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: chatsentry-credentials
+                  key: S3_SECRET_KEY
+            - name: S3_ENDPOINT_URL
+              value: "https://chi.tacc.chameleoncloud.org:7480"
+            - name: S3_MODEL_BUCKET
+              valueFrom:
+                configMapKeyRef:
+                  name: training-config
+                  key: s3_model_bucket
 
           resources:
             requests:
@@ -128,11 +275,22 @@ spec:
               amd.com/gpu: "1"
 
           volumeMounts:
+            # Data downloaded by fetch-data init container
             - name: training-data
-              mountPath: /workspace/data
+              mountPath: /workspace/retraining-data
               readOnly: true
+            # Checkpoint downloaded by fetch-checkpoint init container
+            - name: checkpoints
+              mountPath: /workspace/checkpoints
+              readOnly: true
+            # Writable scratch space for outputs before MLflow upload
+            - name: outputs
+              mountPath: /workspace/outputs
 
       volumes:
         - name: training-data
-          persistentVolumeClaim:
-            claimName: training-data-pvc
+          emptyDir: {}
+        - name: checkpoints
+          emptyDir: {}
+        - name: outputs
+          emptyDir: {}

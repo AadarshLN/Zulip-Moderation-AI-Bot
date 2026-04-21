@@ -38,6 +38,11 @@ docker buildx build --platform linux/amd64 -t kichanitish/inference:latest --pus
 # Zulip moderation bot
 cd services/zulip-bot
 docker buildx build --platform linux/amd64 -t kichanitish/zulip-moderation-bot:latest --push .
+
+# Trainer (ROCm/AMD — use Dockerfile.training at repo root, NOT train/Dockerfile)
+cd ../..
+docker buildx build --platform linux/amd64 -f Dockerfile.training \
+  -t kichanitish/zulip-moderation-trainer:latest --push .
 ```
 
 If you change code in any of these services, rebuild and push before redeploying.
@@ -325,23 +330,35 @@ The inference and ChatSentry services expose metrics at `/metrics`. Prometheus s
 
 ### 7.1 Build and push the trainer image
 
-From the repo root:
+From the repo root (use `Dockerfile.training` — it targets ROCm/AMD, not NVIDIA CUDA):
 
 ```bash
-docker build -f train/Dockerfile -t kichanitish/zulip-moderation-trainer:latest .
-docker push kichanitish/zulip-moderation-trainer:latest
+docker buildx build --platform linux/amd64 \
+  -f Dockerfile.training \
+  -t kichanitish/zulip-moderation-trainer:latest \
+  --push .
 ```
 
-Update the image field in [infra/k8s/platform/training-job.yaml](infra/k8s/platform/training-job.yaml) if you use a different image name.
+### 7.2 Upload training data to Chameleon S3
 
-### 7.2 Load training data onto the node
+The training job automatically downloads the latest versioned dataset from Chameleon S3 at job start. Upload your splits before triggering the job.
 
-Copy your training CSV to the node so it lands in the PVC mount path:
+Each CSV must have columns: `text`, `is_suicide`, `is_toxicity`.
 
 ```bash
-scp -i ~/.ssh/id_rsa_chameleon your_data.csv \
-  cc@$APP_NODE_IP:/opt/local-path-provisioner/training-data/
+VERSION="v$(date +%Y%m%d-%H%M%S)"
+
+export AWS_ACCESS_KEY_ID=<vault_chameleon_ec2_access>
+export AWS_SECRET_ACCESS_KEY=<vault_chameleon_ec2_secret>
+export AWS_DEFAULT_REGION=us-east-1
+
+for f in train.csv val.csv test.csv; do
+  aws s3 cp $f s3://proj09_Data/zulip-training-data/$VERSION/$f \
+    --endpoint-url https://chi.tacc.chameleoncloud.org:7480
+done
 ```
+
+The job's init container will find the latest `v*` folder and download it automatically.
 
 ### 7.3 Submit the training job
 
