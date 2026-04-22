@@ -83,7 +83,7 @@ cd "$REPO_ROOT"
 sudo docker build -t "$IMAGE_NAME" -f "$REPO_ROOT/Dockerfile.training" "$REPO_ROOT"
 
 echo "== Running training =="
-sudo docker run --rm -it \
+sudo docker run --rm \
   --device=/dev/kfd \
   --device=/dev/dri \
   --group-add video \
