@@ -243,26 +243,30 @@ def _flush_to_minio() -> None:
                         (message_ids,),
                     )
                     for rec in cur.fetchall():
-                        rows.append({
-                            "message_id": str(rec[0]),
-                            "raw_text": rec[1],
-                            "cleaned_text": rec[2],
-                            "is_toxicity": rec[3] or False,
-                            "is_suicide": rec[4] or False,
-                            "source": rec[5],
-                        })
+                        rows.append(
+                            {
+                                "message_id": str(rec[0]),
+                                "raw_text": rec[1],
+                                "cleaned_text": rec[2],
+                                "is_toxicity": rec[3] or False,
+                                "is_suicide": rec[4] or False,
+                                "source": rec[5],
+                            }
+                        )
             finally:
                 conn.close()
         else:
             # Fallback: use buffer data (no labels available)
             for row in _minio_buffer:
-                rows.append({
-                    "raw_text": row.get("raw_text"),
-                    "cleaned_text": row.get("cleaned_text"),
-                    "is_toxicity": False,
-                    "is_suicide": False,
-                    "source": row.get("source", "real"),
-                })
+                rows.append(
+                    {
+                        "raw_text": row.get("raw_text"),
+                        "cleaned_text": row.get("cleaned_text"),
+                        "is_toxicity": False,
+                        "is_suicide": False,
+                        "source": row.get("source", "real"),
+                    }
+                )
 
         client = get_minio_client()
         lines = "\n".join(json.dumps(row) for row in rows)
@@ -307,6 +311,7 @@ def _trigger_compile_job() -> str:
     """Delete any existing compile-training-data job and create a fresh one."""
     try:
         from kubernetes import client as k8s_client, config as k8s_config
+
         k8s_config.load_incluster_config()
         batch = k8s_client.BatchV1Api()
         namespace = "platform"
@@ -352,7 +357,9 @@ def _trigger_compile_job() -> str:
             k8s_client.V1EnvVar(
                 name="GPU_SERVICE_API_KEY",
                 value_from=k8s_client.V1EnvVarSource(
-                    secret_key_ref=k8s_client.V1SecretKeySelector(name="gpu-service-credentials", key="GPU_SERVICE_API_KEY")
+                    secret_key_ref=k8s_client.V1SecretKeySelector(
+                        name="gpu-service-credentials", key="GPU_SERVICE_API_KEY"
+                    )
                 ),
             ),
         ]

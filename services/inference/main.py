@@ -50,6 +50,7 @@ def _resolve_model_version() -> str:
         log.warning("Could not reach MLflow (%s) — using MODEL_NAME as version", e)
         return MODEL_NAME
 
+
 app = FastAPI()
 
 # ── Prometheus metrics ─────────────────────────────────────────────────────────
