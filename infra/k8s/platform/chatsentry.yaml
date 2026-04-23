@@ -26,10 +26,8 @@ spec:
       serviceAccountName: chatsentry
       containers:
         - name: chatsentry
-          # Built locally on the app node from services/chatsentry/Dockerfile and
-          # imported into k3s before applying this manifest.
-          image: docker.io/library/chatsentry-api:vm-local
-          imagePullPolicy: IfNotPresent
+          image: kichanitish/chatsentry-api:latest
+          imagePullPolicy: Always
           ports:
             - containerPort: 8000
           env:
