@@ -324,14 +324,6 @@ def stratified_split(
     )
 
     # Step 2: split 30% evenly into val (15%) and test (15%)
-    # Fall back to non-stratified if any class has < 2 members in temp_df
-    temp_min_class = temp_df["label_combo"].value_counts().min()
-    val_test_stratify = temp_df["label_combo"] if temp_min_class >= 2 else None
-    if val_test_stratify is None:
-        logger.warning(
-            "Skipping stratification for val/test split — smallest class has %d member(s) in temp set",
-            temp_min_class,
-        )
     val_df, test_df = train_test_split(
         temp_df,
         test_size=config.TEST_SPLIT_RATIO / (config.VAL_SPLIT_RATIO + config.TEST_SPLIT_RATIO),  # 0.50 for 15/15
