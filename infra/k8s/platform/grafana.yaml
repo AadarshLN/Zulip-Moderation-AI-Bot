@@ -44,38 +44,35 @@ data:
       "time": {"from": "now-1h", "to": "now"},
       "panels": [
         {
-          "id": 1, "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
-          "title": "Inference Pod Up",
+          "id": 1, "gridPos": {"x": 0, "y": 0, "w": 24, "h": 5},
+          "title": "Service Health",
           "type": "stat",
-          "targets": [{"expr": "up{job=\"inference\"}", "legendFormat": "inference"}],
-          "options": {"colorMode": "background"},
-          "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}, "1": {"text": "UP", "color": "green"}}}]}}
+          "options": {"colorMode": "background", "reduceOptions": {"calcs": ["lastNotNull"]}},
+          "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}, "1": {"text": "UP", "color": "green"}}}]}},
+          "targets": [
+            {"expr": "kube_pod_status_ready{namespace=~\"platform|zulip\", condition=\"true\"}", "legendFormat": "{{pod}}", "instant": true}
+          ]
         },
         {
-          "id": 2, "gridPos": {"x": 6, "y": 0, "w": 6, "h": 4},
-          "title": "ChatSentry Pod Up",
+          "id": 3, "gridPos": {"x": 0, "y": 5, "w": 12, "h": 4},
+          "title": "Moderation Request Rate (req/s)",
           "type": "stat",
-          "targets": [{"expr": "up{job=\"chatsentry\"}", "legendFormat": "chatsentry"}],
-          "options": {"colorMode": "background"},
-          "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}, "1": {"text": "UP", "color": "green"}}}]}}
-        },
-        {
-          "id": 3, "gridPos": {"x": 12, "y": 0, "w": 6, "h": 4},
-          "title": "Inference Request Rate (req/s)",
-          "type": "stat",
-          "targets": [{"expr": "rate(http_requests_total{job=\"inference\"}[5m])", "legendFormat": "req/s"}],
+          "targets": [{"expr": "sum(rate(http_requests_total{job=\"inference\",handler=\"/moderate\"}[5m]))", "legendFormat": "req/s"}],
           "options": {"colorMode": "value"}
         },
         {
-          "id": 4, "gridPos": {"x": 18, "y": 0, "w": 6, "h": 4},
-          "title": "Inference p99 Latency (ms)",
+          "id": 16, "gridPos": {"x": 12, "y": 5, "w": 12, "h": 4},
+          "title": "Training Job Status",
           "type": "stat",
-          "targets": [{"expr": "histogram_quantile(0.99, rate(inference_latency_ms_bucket[5m]))", "legendFormat": "p99"}],
-          "options": {"colorMode": "value"},
-          "fieldConfig": {"defaults": {"thresholds": {"steps": [{"value": 0, "color": "green"}, {"value": 500, "color": "yellow"}, {"value": 2000, "color": "red"}]}}}
+          "options": {"colorMode": "background"},
+          "targets": [
+            {"expr": "kube_job_status_active{namespace=\"platform\"}", "legendFormat": "{{job_name}} active"},
+            {"expr": "kube_job_status_succeeded{namespace=\"platform\"}", "legendFormat": "{{job_name}} succeeded"},
+            {"expr": "kube_job_status_failed{namespace=\"platform\"}", "legendFormat": "{{job_name}} failed"}
+          ]
         },
         {
-          "id": 5, "gridPos": {"x": 0, "y": 4, "w": 12, "h": 8},
+          "id": 5, "gridPos": {"x": 0, "y": 9, "w": 12, "h": 8},
           "title": "Moderation Actions Over Time",
           "type": "timeseries",
           "targets": [
@@ -86,58 +83,65 @@ data:
           ]
         },
         {
-          "id": 6, "gridPos": {"x": 12, "y": 4, "w": 12, "h": 8},
+          "id": 6, "gridPos": {"x": 12, "y": 9, "w": 12, "h": 8},
           "title": "Inference Latency Percentiles (ms)",
           "type": "timeseries",
           "targets": [
-            {"expr": "histogram_quantile(0.50, rate(inference_latency_ms_bucket[5m]))", "legendFormat": "p50"},
-            {"expr": "histogram_quantile(0.95, rate(inference_latency_ms_bucket[5m]))", "legendFormat": "p95"},
-            {"expr": "histogram_quantile(0.99, rate(inference_latency_ms_bucket[5m]))", "legendFormat": "p99"}
+            {"expr": "histogram_quantile(0.50, sum(rate(inference_latency_ms_bucket[5m])) by (le))", "legendFormat": "p50"},
+            {"expr": "histogram_quantile(0.95, sum(rate(inference_latency_ms_bucket[5m])) by (le))", "legendFormat": "p95"},
+            {"expr": "histogram_quantile(0.99, sum(rate(inference_latency_ms_bucket[5m])) by (le))", "legendFormat": "p99"}
           ]
         },
         {
-          "id": 7, "gridPos": {"x": 0, "y": 12, "w": 12, "h": 8},
+          "id": 7, "gridPos": {"x": 0, "y": 17, "w": 12, "h": 8},
           "title": "Toxicity Score Distribution",
           "type": "timeseries",
           "targets": [
-            {"expr": "histogram_quantile(0.50, rate(inference_toxicity_score_bucket[5m]))", "legendFormat": "p50"},
-            {"expr": "histogram_quantile(0.95, rate(inference_toxicity_score_bucket[5m]))", "legendFormat": "p95"},
-            {"expr": "histogram_quantile(0.99, rate(inference_toxicity_score_bucket[5m]))", "legendFormat": "p99"}
+            {"expr": "histogram_quantile(0.50, sum(rate(inference_toxicity_score_bucket[5m])) by (le))", "legendFormat": "p50"},
+            {"expr": "histogram_quantile(0.95, sum(rate(inference_toxicity_score_bucket[5m])) by (le))", "legendFormat": "p95"},
+            {"expr": "histogram_quantile(0.99, sum(rate(inference_toxicity_score_bucket[5m])) by (le))", "legendFormat": "p99"}
           ]
         },
         {
-          "id": 8, "gridPos": {"x": 12, "y": 12, "w": 12, "h": 8},
+          "id": 8, "gridPos": {"x": 12, "y": 17, "w": 12, "h": 8},
           "title": "Self-Harm Score Distribution",
           "type": "timeseries",
           "targets": [
-            {"expr": "histogram_quantile(0.50, rate(inference_self_harm_score_bucket[5m]))", "legendFormat": "p50"},
-            {"expr": "histogram_quantile(0.95, rate(inference_self_harm_score_bucket[5m]))", "legendFormat": "p95"},
-            {"expr": "histogram_quantile(0.99, rate(inference_self_harm_score_bucket[5m]))", "legendFormat": "p99"}
+            {"expr": "histogram_quantile(0.50, sum(rate(inference_self_harm_score_bucket[5m])) by (le))", "legendFormat": "p50"},
+            {"expr": "histogram_quantile(0.95, sum(rate(inference_self_harm_score_bucket[5m])) by (le))", "legendFormat": "p95"},
+            {"expr": "histogram_quantile(0.99, sum(rate(inference_self_harm_score_bucket[5m])) by (le))", "legendFormat": "p99"}
           ]
         },
         {
-          "id": 9, "gridPos": {"x": 0, "y": 20, "w": 12, "h": 8},
-          "title": "Container CPU Usage",
-          "type": "timeseries",
-          "targets": [
-            {"expr": "rate(container_cpu_usage_seconds_total{namespace=\"platform\", container!=\"\"}[5m]) * 1000", "legendFormat": "{{container}}"}
-          ]
-        },
-        {
-          "id": 10, "gridPos": {"x": 12, "y": 20, "w": 12, "h": 8},
-          "title": "Container Memory Usage (MB)",
-          "type": "timeseries",
-          "targets": [
-            {"expr": "container_memory_working_set_bytes{namespace=\"platform\", container!=\"\"} / 1024 / 1024", "legendFormat": "{{container}}"}
-          ]
-        },
-        {
-          "id": 11, "gridPos": {"x": 0, "y": 28, "w": 24, "h": 8},
+          "id": 11, "gridPos": {"x": 0, "y": 25, "w": 24, "h": 8},
           "title": "HTTP Request Rate by Endpoint",
           "type": "timeseries",
           "targets": [
-            {"expr": "rate(http_requests_total{job=\"inference\"}[5m])", "legendFormat": "inference {{handler}}"},
-            {"expr": "rate(http_requests_total{job=\"chatsentry\"}[5m])", "legendFormat": "chatsentry {{handler}}"}
+            {"expr": "rate(http_requests_total{job=\"inference\",handler=\"/moderate\"}[5m])", "legendFormat": "{{method}} {{handler}} {{status}}"}
+          ]
+        },
+        {
+          "id": 13, "gridPos": {"x": 0, "y": 33, "w": 8, "h": 8},
+          "title": "Node CPU Usage %",
+          "type": "timeseries",
+          "targets": [
+            {"expr": "100 - (avg by(node) (rate(node_cpu_seconds_total{mode=\"idle\",job=~\"node-exporter.*\"}[5m])) * 100)", "legendFormat": "{{node}}"}
+          ]
+        },
+        {
+          "id": 14, "gridPos": {"x": 8, "y": 33, "w": 8, "h": 8},
+          "title": "Node Memory Usage %",
+          "type": "timeseries",
+          "targets": [
+            {"expr": "100 - (avg by(node) (node_memory_MemAvailable_bytes{job=~\"node-exporter.*\"}) / avg by(node) (node_memory_MemTotal_bytes{job=~\"node-exporter.*\"}) * 100)", "legendFormat": "{{node}}"}
+          ]
+        },
+        {
+          "id": 15, "gridPos": {"x": 16, "y": 33, "w": 8, "h": 8},
+          "title": "Node Disk Usage %",
+          "type": "timeseries",
+          "targets": [
+            {"expr": "100 - (avg by(node) (node_filesystem_avail_bytes{job=~\"node-exporter.*\",mountpoint=\"/\",fstype!=\"tmpfs\"}) / avg by(node) (node_filesystem_size_bytes{job=~\"node-exporter.*\",mountpoint=\"/\",fstype!=\"tmpfs\"}) * 100)", "legendFormat": "{{node}}"}
           ]
         }
       ],
