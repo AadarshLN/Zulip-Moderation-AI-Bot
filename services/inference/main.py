@@ -50,6 +50,7 @@ def _resolve_model_version() -> str:
         log.warning("Could not reach MLflow (%s) — using MODEL_NAME as version", e)
         return MODEL_NAME
 
+
 app = FastAPI()
 
 # ── Prometheus metrics ─────────────────────────────────────────────────────────
@@ -313,7 +314,7 @@ async def moderate_message(request: ZulipRequest):
 
     if self_harm > config["thresholds"]["self_harm_alert"]:
         response_action = "ALERT_ADMIN"
-        reason = "High self-harm confidence detected. Messaging mental health resources."
+        reason = "Self-harm detected. Sender notified via DM with crisis resources."
     elif toxicity > config["thresholds"]["toxicity_high"]:
         response_action = "HIDE_AND_STRIKE"
         reason = "High toxicity confidence. Message hidden, strike recorded."

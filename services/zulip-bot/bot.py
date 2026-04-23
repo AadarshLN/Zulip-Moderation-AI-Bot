@@ -126,6 +126,35 @@ def delete_message(message_id: int) -> None:
         log.info("Deleted message %d", message_id)
 
 
+CRISIS_MESSAGE = (
+    "Hi, I noticed your message and wanted to reach out. "
+    "If you're going through a difficult time, please know that support is available:\n\n"
+    "- **988 Suicide & Crisis Lifeline**: call or text **988** (US)\n"
+    "- **Crisis Text Line**: text HOME to **741741**\n"
+    "- **International Association for Suicide Prevention**: https://www.iasp.info/resources/Crisis_Centres/\n\n"
+    "You are not alone. A moderator has been notified and will follow up with you."
+)
+
+
+def notify_sender(event: dict) -> None:
+    """Send a private DM to the message sender with crisis resources."""
+    sender_email = event.get("sender_email")
+    if not sender_email:
+        log.warning("Cannot notify sender — sender_email missing from event")
+        return
+    result = client.send_message(
+        {
+            "type": "private",
+            "to": sender_email,
+            "content": CRISIS_MESSAGE,
+        }
+    )
+    if result["result"] != "success":
+        log.error("Failed to DM sender %s: %s", sender_email, result)
+    else:
+        log.info("Sent crisis resources DM to %s", sender_email)
+
+
 def flag_for_review(event: dict, action: str, score: float) -> None:
     """Post a moderation alert to the #moderation stream."""
     sender = event.get("sender_full_name", "unknown")
@@ -204,6 +233,8 @@ def handle_event(event: dict) -> None:
         log.info("Action %s — flagging message %d for review", action, zulip_msg_id)
         flag_for_review(msg, action, score)
         record_moderation(message_id, action.lower(), score)
+        if action == "ALERT_ADMIN":
+            notify_sender(msg)
 
     else:
         log.debug("Action ALLOW — no action taken for message %d", zulip_msg_id)
