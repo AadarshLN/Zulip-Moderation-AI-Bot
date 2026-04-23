@@ -2,12 +2,15 @@ import logging
 import os
 import time
 
+import mlflow
 import psycopg2
 import torch
 import torch.quantization
 import yaml
 from fastapi import FastAPI
 from minio import Minio
+from prometheus_client import Counter, Histogram
+from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel
 from transformers import AutoModel, AutoTokenizer
 
@@ -17,8 +20,63 @@ log = logging.getLogger(__name__)
 with open("serving_config.yaml", "r") as f:
     config = yaml.safe_load(f)
 
+
+def _resolve_model_version() -> str:
+    """Query MLflow for the latest run in the training experiment that passed the quality gate.
+    Falls back to MODEL_NAME if MLflow is unreachable."""
+    tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow.platform.svc.cluster.local:5000")
+    experiment_name = os.getenv("MLFLOW_EXPERIMENT_NAME", "zulip_moderation_bot_training_v2")
+    try:
+        mlflow.set_tracking_uri(tracking_uri)
+        client = mlflow.tracking.MlflowClient()
+        experiment = client.get_experiment_by_name(experiment_name)
+        if experiment is None:
+            log.warning("MLflow experiment '%s' not found — using MODEL_NAME as version", experiment_name)
+            return MODEL_NAME
+        runs = client.search_runs(
+            experiment_ids=[experiment.experiment_id],
+            filter_string="tags.quality_gate_passed = 'true'",
+            order_by=["start_time DESC"],
+            max_results=1,
+        )
+        if not runs:
+            log.warning("No quality-gate-passing MLflow runs found — using MODEL_NAME as version")
+            return MODEL_NAME
+        run = runs[0]
+        version = run.data.tags.get("mlflow.runName") or run.info.run_id
+        log.info("Resolved model version from MLflow: %s (run_id=%s)", version, run.info.run_id)
+        return version
+    except Exception as e:
+        log.warning("Could not reach MLflow (%s) — using MODEL_NAME as version", e)
+        return MODEL_NAME
+
 app = FastAPI()
 
+# ── Prometheus metrics ─────────────────────────────────────────────────────────
+Instrumentator().instrument(app).expose(app)
+
+TOXICITY_SCORE = Histogram(
+    "inference_toxicity_score",
+    "Toxicity score distribution",
+    buckets=[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+)
+SELF_HARM_SCORE = Histogram(
+    "inference_self_harm_score",
+    "Self-harm score distribution",
+    buckets=[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+)
+ACTION_COUNTER = Counter(
+    "inference_action_total",
+    "Count of moderation actions by type",
+    ["action"],
+)
+INFERENCE_LATENCY = Histogram(
+    "inference_latency_ms",
+    "Model inference latency in milliseconds",
+    buckets=[10, 25, 50, 100, 200, 500, 1000, 2000, 5000],
+)
+
+# Setup Model & Tokenizer
 MODEL_NAME = config["model_name"]
 S3_BUCKET = os.getenv("S3_BUCKET", "proj09_object_store")
 S3_MODEL_KEY = os.getenv("S3_MODEL_KEY", "best_model.pt")
@@ -93,6 +151,7 @@ model = TransformerMultiHeadModel(encoder_name=MODEL_NAME)
 model.load_state_dict(torch.load(_ckpt_path, map_location=device))
 MODEL_SOURCE = "trained"
 MODEL_LOADED_AT = os.path.getmtime(_ckpt_path)
+MODEL_VERSION = _resolve_model_version()
 
 model.eval()
 
@@ -160,7 +219,7 @@ def log_to_moderation(message_id: str, action: str, confidence: float) -> None:
                     INSERT INTO moderation (message_id, action, confidence, model_version, source)
                     VALUES (%s::uuid, %s, %s, %s, 'real')
                     """,
-                    (message_id, action, confidence, MODEL_NAME),
+                    (message_id, action, confidence, MODEL_VERSION),
                 )
         conn.close()
     except Exception as e:
@@ -172,7 +231,7 @@ def log_to_moderation(message_id: str, action: str, confidence: float) -> None:
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "model_source": MODEL_SOURCE}
+    return {"status": "ok", "model_source": MODEL_SOURCE, "model_version": MODEL_VERSION}
 
 
 @app.get("/model-info")
@@ -206,7 +265,7 @@ def metrics():
                     GROUP BY action
                     ORDER BY count DESC
                     """,
-                    (MODEL_NAME,),
+                    (MODEL_VERSION,),
                 )
                 rows = cur.fetchall()
 
@@ -220,7 +279,7 @@ def metrics():
                     FROM moderation
                     WHERE model_version = %s
                     """,
-                    (MODEL_NAME,),
+                    (MODEL_VERSION,),
                 )
                 summary = cur.fetchone()
         conn.close()
@@ -230,7 +289,7 @@ def metrics():
         drift = round(float(avg_24h or 0) - float(avg_all_time or 0), 4)
 
         return {
-            "model_version": MODEL_NAME,
+            "model_version": MODEL_VERSION,
             "model_source": MODEL_SOURCE,
             "total_decisions": total,
             "avg_confidence_24h": round(float(avg_24h or 0), 4),
@@ -265,6 +324,11 @@ async def moderate_message(request: ZulipRequest):
     latency_ms = (time.time() - start_time) * 1000
 
     log_to_moderation(request.message_id, response_action, toxicity)
+    # Record metrics
+    TOXICITY_SCORE.observe(toxicity)
+    SELF_HARM_SCORE.observe(self_harm)
+    ACTION_COUNTER.labels(action=response_action).inc()
+    INFERENCE_LATENCY.observe(latency_ms)
 
     return {
         "message_id": request.message_id,

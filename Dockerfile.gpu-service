@@ -1,0 +1,26 @@
+FROM rocm/pytorch:rocm6.1_ubuntu22.04_py3.10_pytorch_2.4
+
+WORKDIR /workspace
+
+# Install GPU service + data pipeline dependencies
+RUN pip install --no-cache-dir \
+    fastapi>=0.135.0 \
+    uvicorn>=0.42.0 \
+    "transformers>=4.41.0,<4.46.0" \
+    minio>=7.2.0 \
+    psycopg2-binary>=2.9.0 \
+    pyyaml>=6.0.0 \
+    python-dotenv>=1.2.0 \
+    requests>=2.32.0 \
+    ftfy>=6.3.1 \
+    emoji>=2.15.0 \
+    markdownify>=1.2.2 \
+    "accelerate>=0.26.0"
+
+# Copy source and config (pipeline.yaml loaded by src/utils/config.py)
+COPY src/ ./src/
+COPY config/ ./config/
+
+EXPOSE 8001
+
+CMD ["uvicorn", "src.gpu_service.app:app", "--host", "0.0.0.0", "--port", "8001"]

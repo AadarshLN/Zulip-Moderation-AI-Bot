@@ -3,11 +3,12 @@ Zulip Moderation Bot
 
 Listens to all messages via Zulip's event queue, sends each message to the
 ChatSentry API for storage and the inference service for scoring, then takes
-action based on the score:
+action based on the inference service's recommended action:
 
-  score >= DELETE_THRESHOLD  → delete the message
-  score >= FLAG_THRESHOLD    → post to #moderation stream for human review
-  score <  FLAG_THRESHOLD    → no action
+  HIDE_AND_STRIKE  → delete the message (high toxicity)
+  WARN_AND_OBSCURE → post to #moderation stream for human review (medium toxicity)
+  ALERT_ADMIN      → post to #moderation stream for human review (self-harm)
+  ALLOW            → no action
 
 All decisions are recorded back to ChatSentry via POST /flags.
 """
@@ -74,7 +75,7 @@ def send_to_chatsentry(text: str, msg: dict) -> dict | None:
 
 
 def get_moderation(message_id: str, msg: dict) -> dict | None:
-    """POST to inference /moderate, return full response dict.
+    """POST to inference /moderate, return the full response dict.
     Returns None on error so the message is not incorrectly actioned."""
     try:
         resp = requests.post(
@@ -125,7 +126,7 @@ def delete_message(message_id: int) -> None:
         log.info("Deleted message %d", message_id)
 
 
-def flag_for_review(event: dict, score: float) -> None:
+def flag_for_review(event: dict, action: str, score: float) -> None:
     """Post a moderation alert to the #moderation stream."""
     sender = event.get("sender_full_name", "unknown")
     stream = event.get("display_recipient", "unknown")
@@ -134,7 +135,7 @@ def flag_for_review(event: dict, score: float) -> None:
     msg_id = event.get("id")
 
     alert = (
-        f"⚠️ **Flagged message** (score: {score:.2f})\n"
+        f"⚠️ **Flagged message** (action: {action}, score: {score:.2f})\n"
         f"**From:** {sender}\n"
         f"**Stream:** {stream} > {topic}\n"
         f"**Message ID:** {msg_id}\n"
@@ -151,7 +152,7 @@ def flag_for_review(event: dict, score: float) -> None:
     if result["result"] != "success":
         log.error("Failed to post to moderation stream: %s", result)
     else:
-        log.info("Flagged message %d to #%s (score=%.2f)", msg_id, MODERATION_STREAM, score)
+        log.info("Flagged message %d to #%s (action=%s, score=%.2f)", msg_id, MODERATION_STREAM, action, score)
 
 
 # ── Event handler ──────────────────────────────────────────────────────────────
@@ -180,32 +181,32 @@ def handle_event(event: dict) -> None:
     cs_response = send_to_chatsentry(text, msg)
     message_id = cs_response["message_id"] if cs_response else str(uuid.uuid4())
 
-    # 2. Score
-    result = get_moderation(message_id, msg)
-    if result is None:
-        log.warning("Inference unavailable for message %d — skipping", zulip_msg_id)
+    # 2. Get moderation decision from inference service
+    moderation = get_moderation(message_id, msg)
+    if moderation is None:
+        log.warning("No moderation response for message %d — skipping", zulip_msg_id)
         return
 
-    action = result["action"]
-    toxicity = result["scores"]["toxicity"]
-    self_harm = result["scores"]["self_harm"]
+    action = moderation.get("action", "ALLOW")
+    scores = moderation.get("scores", {})
+    toxicity = scores.get("toxicity", 0.0)
+    self_harm = scores.get("self_harm", 0.0)
     log.info("Message %d → action=%s toxicity=%.2f self_harm=%.2f", zulip_msg_id, action, toxicity, self_harm)
 
-    # 3. Act according to the tiered decision matrix from the proposal:
-    #   HIDE_AND_STRIKE  → delete message, record strike
-    #   WARN_AND_OBSCURE → flag for admin review, warn user
-    #   ALERT_ADMIN      → flag for admin (do NOT delete — isolating self-harm users is harmful)
-    #   ALLOW            → no action
+    # 3. Act on the inference service's recommended action
     if action == "HIDE_AND_STRIKE":
+        log.info("Action HIDE_AND_STRIKE — deleting message %d", zulip_msg_id)
         delete_message(zulip_msg_id)
         record_moderation(message_id, "auto-deleted", toxicity)
 
     elif action in ("WARN_AND_OBSCURE", "ALERT_ADMIN"):
-        flag_for_review(msg, max(toxicity, self_harm))
-        record_moderation(message_id, action.lower(), max(toxicity, self_harm))
+        score = self_harm if action == "ALERT_ADMIN" else toxicity
+        log.info("Action %s — flagging message %d for review", action, zulip_msg_id)
+        flag_for_review(msg, action, score)
+        record_moderation(message_id, action.lower(), score)
 
     else:
-        log.debug("Action ALLOW — no action taken")
+        log.debug("Action ALLOW — no action taken for message %d", zulip_msg_id)
 
 
 # ── Main loop ──────────────────────────────────────────────────────────────────

@@ -7,6 +7,9 @@
 #   RabbitMQ:    http://rabbitmq.FLOATING_IP.nip.io
 #   Adminer:     http://adminer.FLOATING_IP.nip.io  (postgres UI)
 #   ChatSentry:  http://chatsentry.FLOATING_IP.nip.io
+#   Prometheus:  http://prometheus.FLOATING_IP.nip.io
+#   Grafana:     http://grafana.FLOATING_IP.nip.io
+#   GE Viewer:   http://ge-viewer.FLOATING_IP.nip.io
 
 # ── Zulip (namespace: zulip) ──────────────────────────────────────────────────
 apiVersion: networking.k8s.io/v1
@@ -130,3 +133,65 @@ spec:
                 name: chatsentry
                 port:
                   number: 8000
+---
+# ── Prometheus (namespace: platform) ──────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: prometheus-ingress
+  namespace: platform
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: "prometheus.FLOATING_IP_PLACEHOLDER.nip.io"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: prometheus
+                port:
+                  number: 9090
+---
+# ── Grafana (namespace: platform) ─────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: grafana-ingress
+  namespace: platform
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: "grafana.FLOATING_IP_PLACEHOLDER.nip.io"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: grafana
+                port:
+                  number: 3000
+---
+# ── GE Viewer — Great Expectations reports (namespace: platform) ───────────────
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ge-viewer-ingress
+  namespace: platform
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: "ge-viewer.FLOATING_IP_PLACEHOLDER.nip.io"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ge-viewer
+                port:
+                  number: 8080

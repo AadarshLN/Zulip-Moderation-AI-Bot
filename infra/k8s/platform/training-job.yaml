@@ -1,13 +1,23 @@
 # ── Training Job ──────────────────────────────────────────────────────────────
 # Runs the ML training pipeline as a one-shot Kubernetes Job on the GPU node.
 #
-# Prerequisites:
-#   1. Build and push the image:
-#        docker build -t <YOUR_DOCKERHUB_USER>/zulip-moderation-trainer:latest .
-#        docker push <YOUR_DOCKERHUB_USER>/zulip-moderation-trainer:latest
-#   2. Update the image field below with your image path.
-#   3. Place your training data CSV at /opt/local-path-provisioner/training-data/
-#      on the node, or mount it via a PVC.
+# Uses nsenter to enter the host's PID/mount/network/IPC namespaces and run
+# retrain_latest.sh directly via Docker — this is the only reliable way to give
+# the container AMD ROCm GPU access (Docker's --device passthrough works;
+# K8s/containerd device plugins do not for AMD MI100 on this stack).
+#
+# Flow (mirrors scripts/retrain_latest.sh):
+#   1. nsenter into host namespace (PID 1)
+#   2. execute retrain_latest.sh on the host as cc user
+#      - downloads latest versioned dataset from Chameleon S3 via rclone
+#      - fetches approved checkpoint (if exists) for resume training
+#      - runs docker run with --device=/dev/kfd --device=/dev/dri
+#      - if quality gate passes, promotes best_model.pt back to S3
+#
+# Prerequisites (set up by Ansible post_k8s.yml automatically):
+#   - retrain_latest.sh synced to /home/cc/Zulip-Moderation-AI-Bot/scripts/
+#   - rclone configured at /home/cc/.config/rclone/rclone.conf
+#   - trainer image available on Docker Hub: kichanitish/zulip-moderation-trainer:latest
 #
 # To trigger a training run:
 #   kubectl apply -f training-job.yaml
@@ -20,30 +30,6 @@
 #   kubectl logs -n platform -l job-name=zulip-moderation-training -f
 # ─────────────────────────────────────────────────────────────────────────────
 
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: training-config
-  namespace: platform
-data:
-  # Which experiment config and run to execute (matches config/experiments.yaml)
-  experiment_config: "config/experiments.yaml"
-  run_name: "hatebert_multihead"
-  mlflow_experiment_name: "zulip_moderation_bot_training"
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: training-data-pvc
-  namespace: platform
-spec:
-  accessModes:
-    - ReadWriteOnce
-  storageClassName: local-path
-  resources:
-    requests:
-      storage: 5Gi
----
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -62,9 +48,12 @@ spec:
         app: zulip-moderation-trainer
     spec:
       restartPolicy: Never
+      hostPID: true
+      hostNetwork: true
+      hostIPC: true
+      dnsPolicy: Default
 
       # Pin to GPU node — which carries the dedicated=gpu:NoSchedule taint.
-      # Without the toleration this pod would not schedule anywhere.
       nodeSelector:
         dedicated: gpu
       tolerations:
@@ -74,65 +63,43 @@ spec:
 
       containers:
         - name: trainer
-          # Replace with your image: docker build -t <user>/zulip-moderation-trainer:latest .
-          image: kichanitish/zulip-moderation-trainer:latest
-          imagePullPolicy: Always
+          image: alpine:3
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
 
+          # nsenter into the host's full namespace (PID 1), then run
+          # retrain_latest.sh as cc user via su. Docker inside will have
+          # full access to /dev/kfd and /dev/dri with the correct groups.
           command:
-            - python
-            - scripts/train.py
-            - --config
-            - $(EXPERIMENT_CONFIG)
-            - --run
-            - $(RUN_NAME)
+            - nsenter
+            - "--target"
+            - "1"
+            - "--mount"
+            - "--uts"
+            - "--ipc"
+            - "--net"
+            - "--pid"
+            - "--"
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+              RUN_NAME="${RUN_NAME:-hatebert_multihead}"
+              MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI:-http://mlflow.129.114.26.93.nip.io/}"
+              export MLFLOW_TRACKING_URI
+              exec su - cc -c "
+                export MLFLOW_TRACKING_URI='$MLFLOW_TRACKING_URI'
+                /home/cc/Zulip-Moderation-AI-Bot/scripts/retrain_latest.sh '$RUN_NAME'
+              "
 
           env:
-            # ── Training config (from ConfigMap) ─────────────────────────────
-            - name: EXPERIMENT_CONFIG
-              valueFrom:
-                configMapKeyRef:
-                  name: training-config
-                  key: experiment_config
             - name: RUN_NAME
-              valueFrom:
-                configMapKeyRef:
-                  name: training-config
-                  key: run_name
-
-            # ── MLflow tracking ───────────────────────────────────────────────
+              value: "hatebert_multihead"
             - name: MLFLOW_TRACKING_URI
-              value: "http://mlflow.platform.svc.cluster.local:5000"
-            - name: MLFLOW_EXPERIMENT_NAME
-              valueFrom:
-                configMapKeyRef:
-                  name: training-config
-                  key: mlflow_experiment_name
-
-            # ── MLflow artifact storage ───────────────────────────────────────
-            # Artifacts are logged via the MLflow tracking server (--serve-artifacts).
-            # The server proxies all artifact operations to MinIO — no S3 credentials
-            # or endpoint needed here. Set MLFLOW_TRACKING_URI and MLflow handles the rest.
-
-            # ── ROCm / AMD GPU visibility ─────────────────────────────────────
-            - name: HIP_VISIBLE_DEVICES
-              value: "all"
+              value: "http://mlflow.129.114.26.93.nip.io/"
 
           resources:
             requests:
-              cpu: 2000m
-              memory: 8Gi
-              amd.com/gpu: "1"
-            limits:
-              cpu: 4000m
-              memory: 16Gi
-              amd.com/gpu: "1"
-
-          volumeMounts:
-            - name: training-data
-              mountPath: /workspace/data
-              readOnly: true
-
-      volumes:
-        - name: training-data
-          persistentVolumeClaim:
-            claimName: training-data-pvc
+              cpu: 100m
+              memory: 64Mi

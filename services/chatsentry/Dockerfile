@@ -31,7 +31,11 @@ RUN pip install --no-cache-dir \
     requests>=2.32.0 \
     ftfy>=6.3.1 \
     emoji>=2.15.0 \
-    markdownify>=1.2.2
+    markdownify>=1.2.2 \
+    jinja2>=3.0.0 \
+    "prometheus-fastapi-instrumentator>=6.0.0,<7.0.0" \
+    prometheus-client>=0.20.0 \
+    kubernetes>=29.0.0
 
 COPY src/ ./src/
 COPY config/ ./config/

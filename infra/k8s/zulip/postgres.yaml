@@ -33,22 +33,17 @@ data:
           email VARCHAR(255),
           created_at TIMESTAMPTZ DEFAULT NOW(),
           source VARCHAR(32) NOT NULL DEFAULT 'real'
-              CHECK (source IN ('real', 'synthetic_hf'))
+              CHECK (source IN ('real', 'synthetic'))
       );
       CREATE TABLE IF NOT EXISTS messages (
           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
           user_id UUID NOT NULL REFERENCES users(id),
           text TEXT NOT NULL,
           cleaned_text TEXT,
-          toxic BOOLEAN DEFAULT FALSE,
-          severe_toxic BOOLEAN DEFAULT FALSE,
-          obscene BOOLEAN DEFAULT FALSE,
-          threat BOOLEAN DEFAULT FALSE,
-          insult BOOLEAN DEFAULT FALSE,
-          identity_hate BOOLEAN DEFAULT FALSE,
+          is_toxicity BOOLEAN DEFAULT FALSE,
           is_suicide BOOLEAN DEFAULT FALSE,
           source VARCHAR(32) NOT NULL DEFAULT 'real'
-              CHECK (source IN ('real', 'synthetic_hf')),
+              CHECK (source IN ('real', 'synthetic')),
           created_at TIMESTAMPTZ DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS idx_messages_text_fts
@@ -60,7 +55,7 @@ data:
           reason TEXT,
           is_verified BOOLEAN DEFAULT FALSE,
           source VARCHAR(32) NOT NULL DEFAULT 'real'
-              CHECK (source IN ('real', 'synthetic_hf')),
+              CHECK (source IN ('real', 'synthetic')),
           created_at TIMESTAMPTZ DEFAULT NOW()
       );
       CREATE TABLE IF NOT EXISTS moderation (
@@ -70,7 +65,7 @@ data:
           confidence FLOAT,
           model_version VARCHAR(100),
           source VARCHAR(32) NOT NULL DEFAULT 'real'
-              CHECK (source IN ('real', 'synthetic_hf')),
+              CHECK (source IN ('real', 'synthetic')),
           decided_at TIMESTAMPTZ DEFAULT NOW()
       );
     EOSQL

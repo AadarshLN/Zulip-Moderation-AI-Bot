@@ -9,7 +9,7 @@ REMOTE="rclone_s3:proj09_Data/zulip-training-data"
 
 cd "$REPO_ROOT"
 LOCAL_DATA_ROOT="$REPO_ROOT/retraining-data"
-IMAGE_NAME="zulip-moderation"
+IMAGE_NAME="kichanitish/zulip-moderation-trainer:latest"
 RUN_NAME="${1:-hatebert_multihead}"
 MLFLOW_URI="${MLFLOW_TRACKING_URI:-http://mlflow.129.114.26.93.nip.io/}"
 SESSION_NAME="retraining_$(date +%F_%H-%M-%S)"
@@ -78,9 +78,10 @@ fi
 
 
 
-echo "== Building Docker image =="
-cd "$REPO_ROOT"
-sudo docker build -t "$IMAGE_NAME" -f "$REPO_ROOT/Dockerfile.training" "$REPO_ROOT"
+echo "== Pulling trainer image =="
+sudo docker pull "$IMAGE_NAME"
+
+mkdir -p "$REPO_ROOT/outputs"
 
 echo "== Running training =="
 sudo docker run --rm \
@@ -88,7 +89,9 @@ sudo docker run --rm \
   --device=/dev/dri \
   --group-add video \
   --ipc=host \
-  -v "$REPO_ROOT:/workspace" \
+  -v "$LOCAL_DATA_ROOT:/workspace/retraining-data" \
+  -v "$LOCAL_CKPT_DIR:/workspace/checkpoints" \
+  -v "$REPO_ROOT/outputs:/workspace/outputs" \
   -e GIT_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)" \
   -e MLFLOW_TRACKING_URI="$MLFLOW_URI" \
   -e RESUME_FROM_CHECKPOINT="/workspace/checkpoints/best_model.pt" \

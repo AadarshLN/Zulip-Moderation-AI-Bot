@@ -1,0 +1,89 @@
+# ── Training CronJob ───────────────────────────────────────────────────────────
+# Schedules the ML training pipeline as a daily Kubernetes CronJob on the GPU node.
+#
+# Uses the same nsenter approach as training-job.yaml — enters the host's namespaces
+# and runs retrain_latest.sh via Docker for AMD ROCm GPU access.
+#
+# Schedule: daily at 1 AM UTC
+#
+# To trigger manually outside the schedule:
+#   kubectl create job -n platform --from=cronjob/zulip-moderation-training zulip-moderation-training-manual
+#
+# To monitor:
+#   kubectl get jobs -n platform
+#   kubectl logs -n platform -l job-name=<job-name> -f
+#   (or via crictl on the GPU node if kubectl logs 502s)
+# ─────────────────────────────────────────────────────────────────────────────
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: zulip-moderation-training
+  namespace: platform
+spec:
+  schedule: "0 1 * * *"
+  # Skip new run if previous one is still running
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels:
+            app: zulip-moderation-trainer
+        spec:
+          restartPolicy: Never
+          hostPID: true
+          hostNetwork: true
+          hostIPC: true
+          dnsPolicy: Default
+
+          nodeSelector:
+            dedicated: gpu
+          tolerations:
+            - key: dedicated
+              value: gpu
+              effect: NoSchedule
+
+          containers:
+            - name: trainer
+              image: alpine:3
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                privileged: true
+
+              command:
+                - nsenter
+                - "--target"
+                - "1"
+                - "--mount"
+                - "--uts"
+                - "--ipc"
+                - "--net"
+                - "--pid"
+                - "--"
+                - /bin/bash
+                - -c
+                - |
+                  set -euo pipefail
+                  RUN_NAME="${RUN_NAME:-hatebert_multihead}"
+                  MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI:-http://mlflow.129.114.26.93.nip.io/}"
+                  export MLFLOW_TRACKING_URI
+                  exec su - cc -c "
+                    export MLFLOW_TRACKING_URI='$MLFLOW_TRACKING_URI'
+                    /home/cc/Zulip-Moderation-AI-Bot/scripts/retrain_latest.sh '$RUN_NAME'
+                  "
+
+              env:
+                - name: RUN_NAME
+                  value: "hatebert_multihead"
+                - name: MLFLOW_TRACKING_URI
+                  value: "http://mlflow.129.114.26.93.nip.io/"
+
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 64Mi

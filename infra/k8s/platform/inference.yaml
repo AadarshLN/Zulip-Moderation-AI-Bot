@@ -19,14 +19,49 @@ spec:
           imagePullPolicy: Always
           ports:
             - containerPort: 8000
-          # Model loading (hateBERT download + quantization) takes ~60-90s on first start.
+
+          env:
+            # S3 — downloads best_model.pt from object store at startup
+            - name: S3_ENDPOINT
+              value: "chi.tacc.chameleoncloud.org:7480"
+            - name: S3_SECURE
+              value: "true"
+            - name: S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: chatsentry-credentials
+                  key: S3_ACCESS_KEY
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: chatsentry-credentials
+                  key: S3_SECRET_KEY
+            - name: S3_BUCKET
+              value: "proj09_object_store"
+            - name: S3_MODEL_KEY
+              value: "best_model.pt"
+            # MLflow — for resolving model version from latest training run
+            - name: MLFLOW_TRACKING_URI
+              value: "http://mlflow.platform.svc.cluster.local:5000"
+            - name: MLFLOW_EXPERIMENT_NAME
+              value: "zulip_moderation_bot_training_v2"
+            # PostgreSQL — for moderation table logging and /metrics endpoint
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: chatsentry-credentials
+                  key: DATABASE_URL
+
+          # Model loading: tokenizer download + S3 model download + quantization.
+          # Allow up to 5 min on first start.
           readinessProbe:
             httpGet:
               path: /health
               port: 8000
-            initialDelaySeconds: 90
+            initialDelaySeconds: 120
             periodSeconds: 10
-            failureThreshold: 6
+            failureThreshold: 18
+
           resources:
             requests:
               cpu: 500m

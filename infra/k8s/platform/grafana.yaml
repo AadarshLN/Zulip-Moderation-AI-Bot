@@ -1,0 +1,230 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: platform
+data:
+  prometheus.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        url: http://prometheus.platform.svc.cluster.local:9090
+        isDefault: true
+        editable: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-providers
+  namespace: platform
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: default
+        folder: ChatSentry
+        type: file
+        disableDeletion: false
+        allowUiUpdates: true
+        options:
+          path: /etc/grafana/dashboards
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: platform
+data:
+  chatsentry.json: |
+    {
+      "title": "ChatSentry Platform",
+      "uid": "chatsentry-main",
+      "refresh": "30s",
+      "time": {"from": "now-1h", "to": "now"},
+      "panels": [
+        {
+          "id": 1, "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
+          "title": "Inference Pod Up",
+          "type": "stat",
+          "targets": [{"expr": "up{job=\"inference\"}", "legendFormat": "inference"}],
+          "options": {"colorMode": "background"},
+          "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}, "1": {"text": "UP", "color": "green"}}}]}}
+        },
+        {
+          "id": 2, "gridPos": {"x": 6, "y": 0, "w": 6, "h": 4},
+          "title": "ChatSentry Pod Up",
+          "type": "stat",
+          "targets": [{"expr": "up{job=\"chatsentry\"}", "legendFormat": "chatsentry"}],
+          "options": {"colorMode": "background"},
+          "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}, "1": {"text": "UP", "color": "green"}}}]}}
+        },
+        {
+          "id": 3, "gridPos": {"x": 12, "y": 0, "w": 6, "h": 4},
+          "title": "Inference Request Rate (req/s)",
+          "type": "stat",
+          "targets": [{"expr": "rate(http_requests_total{job=\"inference\"}[5m])", "legendFormat": "req/s"}],
+          "options": {"colorMode": "value"}
+        },
+        {
+          "id": 4, "gridPos": {"x": 18, "y": 0, "w": 6, "h": 4},
+          "title": "Inference p99 Latency (ms)",
+          "type": "stat",
+          "targets": [{"expr": "histogram_quantile(0.99, rate(inference_latency_ms_bucket[5m]))", "legendFormat": "p99"}],
+          "options": {"colorMode": "value"},
+          "fieldConfig": {"defaults": {"thresholds": {"steps": [{"value": 0, "color": "green"}, {"value": 500, "color": "yellow"}, {"value": 2000, "color": "red"}]}}}
+        },
+        {
+          "id": 5, "gridPos": {"x": 0, "y": 4, "w": 12, "h": 8},
+          "title": "Moderation Actions Over Time",
+          "type": "timeseries",
+          "targets": [
+            {"expr": "rate(inference_action_total{action=\"ALLOW\"}[5m])", "legendFormat": "ALLOW"},
+            {"expr": "rate(inference_action_total{action=\"WARN_AND_OBSCURE\"}[5m])", "legendFormat": "WARN"},
+            {"expr": "rate(inference_action_total{action=\"HIDE_AND_STRIKE\"}[5m])", "legendFormat": "HIDE"},
+            {"expr": "rate(inference_action_total{action=\"ALERT_ADMIN\"}[5m])", "legendFormat": "ALERT"}
+          ]
+        },
+        {
+          "id": 6, "gridPos": {"x": 12, "y": 4, "w": 12, "h": 8},
+          "title": "Inference Latency Percentiles (ms)",
+          "type": "timeseries",
+          "targets": [
+            {"expr": "histogram_quantile(0.50, rate(inference_latency_ms_bucket[5m]))", "legendFormat": "p50"},
+            {"expr": "histogram_quantile(0.95, rate(inference_latency_ms_bucket[5m]))", "legendFormat": "p95"},
+            {"expr": "histogram_quantile(0.99, rate(inference_latency_ms_bucket[5m]))", "legendFormat": "p99"}
+          ]
+        },
+        {
+          "id": 7, "gridPos": {"x": 0, "y": 12, "w": 12, "h": 8},
+          "title": "Toxicity Score Distribution",
+          "type": "timeseries",
+          "targets": [
+            {"expr": "histogram_quantile(0.50, rate(inference_toxicity_score_bucket[5m]))", "legendFormat": "p50"},
+            {"expr": "histogram_quantile(0.95, rate(inference_toxicity_score_bucket[5m]))", "legendFormat": "p95"},
+            {"expr": "histogram_quantile(0.99, rate(inference_toxicity_score_bucket[5m]))", "legendFormat": "p99"}
+          ]
+        },
+        {
+          "id": 8, "gridPos": {"x": 12, "y": 12, "w": 12, "h": 8},
+          "title": "Self-Harm Score Distribution",
+          "type": "timeseries",
+          "targets": [
+            {"expr": "histogram_quantile(0.50, rate(inference_self_harm_score_bucket[5m]))", "legendFormat": "p50"},
+            {"expr": "histogram_quantile(0.95, rate(inference_self_harm_score_bucket[5m]))", "legendFormat": "p95"},
+            {"expr": "histogram_quantile(0.99, rate(inference_self_harm_score_bucket[5m]))", "legendFormat": "p99"}
+          ]
+        },
+        {
+          "id": 9, "gridPos": {"x": 0, "y": 20, "w": 12, "h": 8},
+          "title": "Container CPU Usage",
+          "type": "timeseries",
+          "targets": [
+            {"expr": "rate(container_cpu_usage_seconds_total{namespace=\"platform\", container!=\"\"}[5m]) * 1000", "legendFormat": "{{container}}"}
+          ]
+        },
+        {
+          "id": 10, "gridPos": {"x": 12, "y": 20, "w": 12, "h": 8},
+          "title": "Container Memory Usage (MB)",
+          "type": "timeseries",
+          "targets": [
+            {"expr": "container_memory_working_set_bytes{namespace=\"platform\", container!=\"\"} / 1024 / 1024", "legendFormat": "{{container}}"}
+          ]
+        },
+        {
+          "id": 11, "gridPos": {"x": 0, "y": 28, "w": 24, "h": 8},
+          "title": "HTTP Request Rate by Endpoint",
+          "type": "timeseries",
+          "targets": [
+            {"expr": "rate(http_requests_total{job=\"inference\"}[5m])", "legendFormat": "inference {{handler}}"},
+            {"expr": "rate(http_requests_total{job=\"chatsentry\"}[5m])", "legendFormat": "chatsentry {{handler}}"}
+          ]
+        }
+      ],
+      "schemaVersion": 36
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:10.4.0
+          ports:
+            - containerPort: 3000
+          env:
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-credentials
+                  key: GRAFANA_ADMIN_PASSWORD
+            - name: GF_SECURITY_ADMIN_USER
+              value: "admin"
+            - name: GF_USERS_ALLOW_SIGN_UP
+              value: "false"
+          volumeMounts:
+            - name: datasources
+              mountPath: /etc/grafana/provisioning/datasources
+            - name: dashboard-providers
+              mountPath: /etc/grafana/provisioning/dashboards
+            - name: dashboards
+              mountPath: /etc/grafana/dashboards
+            - name: data
+              mountPath: /var/lib/grafana
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+      volumes:
+        - name: datasources
+          configMap:
+            name: grafana-datasources
+        - name: dashboard-providers
+          configMap:
+            name: grafana-dashboard-providers
+        - name: dashboards
+          configMap:
+            name: grafana-dashboards
+        - name: data
+          persistentVolumeClaim:
+            claimName: grafana-pvc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-pvc
+  namespace: platform
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: platform
+spec:
+  selector:
+    app: grafana
+  ports:
+    - port: 3000
+      targetPort: 3000

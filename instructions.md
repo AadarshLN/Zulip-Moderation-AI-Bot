@@ -38,6 +38,11 @@ docker buildx build --platform linux/amd64 -t kichanitish/inference:latest --pus
 # Zulip moderation bot
 cd services/zulip-bot
 docker buildx build --platform linux/amd64 -t kichanitish/zulip-moderation-bot:latest --push .
+
+# Trainer (ROCm/AMD — use Dockerfile.training at repo root, NOT train/Dockerfile)
+cd ../..
+docker buildx build --platform linux/amd64 -f Dockerfile.training \
+  -t kichanitish/zulip-moderation-trainer:latest --push .
 ```
 
 If you change code in any of these services, rebuild and push before redeploying.
@@ -133,6 +138,7 @@ Key values to fill in:
 | `vault_zulip_bot_api_key` | Fill in after Phase 4.1 (Zulip bot creation) |
 | `vault_google_oauth2_key` | Google OAuth Client ID — see Phase 4.2 |
 | `vault_google_oauth2_secret` | Google OAuth Client Secret — see Phase 4.2 |
+| `vault_grafana_admin_password` | Choose a strong password |
 
 **Note:** `vault_zulip_bot_email` and `vault_zulip_bot_api_key` are obtained from the Zulip UI after the realm is created. Leave them as placeholders for now and fill them in before running `post_k8s.yml`.
 
@@ -264,6 +270,8 @@ This playbook:
 | RabbitMQ | `http://rabbitmq.<IP>.nip.io` | |
 | Adminer | `http://adminer.<IP>.nip.io` | Postgres UI |
 | ChatSentry | `http://chatsentry.<IP>.nip.io` | |
+| Prometheus | `http://prometheus.<IP>.nip.io` | |
+| Grafana | `http://grafana.<IP>.nip.io` | user: `admin` / password: `vault_grafana_admin_password` |
 
 **Adminer login:**
 - Server: `postgres.zulip.svc.cluster.local`
@@ -300,29 +308,57 @@ kubectl exec -n zulip deploy/postgres -- psql -U zulip -d chatsentry \
   -c "SELECT u.email, m.text, m.created_at FROM messages m JOIN users u ON m.user_id = u.id ORDER BY m.created_at DESC LIMIT 5;"
 ```
 
+Verify monitoring stack:
+```bash
+kubectl get pods -n platform | grep -E 'prometheus|grafana|cadvisor'
+```
+
+All three should be `Running`. Then open Grafana at `http://grafana.<IP>.nip.io` and:
+1. Log in with `admin` / `vault_grafana_admin_password`
+2. Go to **Dashboards → Import** → enter ID `19908` (cAdvisor — container resource usage)
+3. Select the Prometheus datasource and click **Import**
+
+The inference and ChatSentry services expose metrics at `/metrics`. Prometheus scrapes them every 15s. Available custom metrics:
+- `inference_toxicity_score` — histogram of toxicity scores
+- `inference_self_harm_score` — histogram of self-harm scores
+- `inference_action_total` — counter of moderation actions (ALLOW / FLAG / DELETE) by label
+- `inference_latency_ms` — model inference latency histogram
+
 ---
 
 ## Phase 7 — Run the training job
 
 ### 7.1 Build and push the trainer image
 
-From the repo root:
+From the repo root (use `Dockerfile.training` — it targets ROCm/AMD, not NVIDIA CUDA):
 
 ```bash
-docker build -f train/Dockerfile -t kichanitish/zulip-moderation-trainer:latest .
-docker push kichanitish/zulip-moderation-trainer:latest
+docker buildx build --platform linux/amd64 \
+  -f Dockerfile.training \
+  -t kichanitish/zulip-moderation-trainer:latest \
+  --push .
 ```
 
-Update the image field in [infra/k8s/platform/training-job.yaml](infra/k8s/platform/training-job.yaml) if you use a different image name.
+### 7.2 Upload training data to Chameleon S3
 
-### 7.2 Load training data onto the node
+The training job automatically downloads the latest versioned dataset from Chameleon S3 at job start. Upload your splits before triggering the job.
 
-Copy your training CSV to the node so it lands in the PVC mount path:
+Each CSV must have columns: `text`, `is_suicide`, `is_toxicity`.
 
 ```bash
-scp -i ~/.ssh/id_rsa_chameleon your_data.csv \
-  cc@$APP_NODE_IP:/opt/local-path-provisioner/training-data/
+VERSION="v$(date +%Y%m%d-%H%M%S)"
+
+export AWS_ACCESS_KEY_ID=<vault_chameleon_ec2_access>
+export AWS_SECRET_ACCESS_KEY=<vault_chameleon_ec2_secret>
+export AWS_DEFAULT_REGION=us-east-1
+
+for f in train.csv val.csv test.csv; do
+  aws s3 cp $f s3://proj09_Data/zulip-training-data/$VERSION/$f \
+    --endpoint-url https://chi.tacc.chameleoncloud.org:7480
+done
 ```
+
+The job's init container will find the latest `v*` folder and download it automatically.
 
 ### 7.3 Submit the training job
 

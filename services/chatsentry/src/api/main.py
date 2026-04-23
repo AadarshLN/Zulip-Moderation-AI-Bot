@@ -5,6 +5,7 @@ import uuid
 from typing import Any
 
 from fastapi import FastAPI
+from prometheus_fastapi_instrumentator import Instrumentator
 
 from src.data.text_cleaner import TextCleaner
 from src.utils.config import config
@@ -21,6 +22,7 @@ _minio_buffer: list[dict[str, Any]] = []
 _MINIO_BATCH_SIZE = 10_000
 
 app = FastAPI(title="ChatSentry API", version="0.1.0")
+Instrumentator().instrument(app).expose(app)
 
 
 @app.middleware("http")
@@ -33,6 +35,11 @@ async def text_cleaning_middleware(request, call_next):
     body: dict[str, Any] = {}
     try:
         body_bytes = await request.body()
+
+        async def receive() -> dict:
+            return {"type": "http.request", "body": body_bytes, "more_body": False}
+
+        request._receive = receive  # type: ignore[attr-defined]
         body = json.loads(body_bytes)
         cleaned = dict(body)
 
@@ -88,7 +95,7 @@ def _persist_message(cleaned_body: dict[str, Any]) -> None:
     raw_text = cleaned_body["raw_text"]
     cleaned_text = cleaned_body["cleaned_text"]
     source = cleaned_body.get("source", "real")
-    if source not in ("real", "synthetic_hf"):
+    if source not in ("real", "synthetic"):
         source = "real"
 
     conn = get_db_connection()
@@ -184,13 +191,13 @@ def _persist_flag(cleaned_body: dict[str, Any]) -> None:
 
 
 def _buffer_for_minio(cleaned_body: dict[str, Any]) -> None:
-    """Buffer cleaned data for MinIO batch upload."""
+    """Buffer message IDs for MinIO batch export."""
     if "cleaned_text" not in cleaned_body:
         return
 
     _minio_buffer.append(
         {
-            "user_id": cleaned_body.get("user_id"),
+            "_message_id": cleaned_body.get("_message_id"),
             "raw_text": cleaned_body.get("raw_text"),
             "cleaned_text": cleaned_body["cleaned_text"],
             "source": cleaned_body.get("source", "real"),
@@ -202,15 +209,65 @@ def _buffer_for_minio(cleaned_body: dict[str, Any]) -> None:
 
 
 def _flush_to_minio() -> None:
-    """Upload buffered cleaned data to MinIO as JSON lines."""
+    """Export labeled messages from DB to MinIO as training data (JSONL).
+
+    Queries messages joined with their labels so is_toxicity/is_suicide are
+    included. Only messages that have been seen since the last flush (tracked
+    via _minio_buffer message IDs) are exported.
+    """
     if not _minio_buffer:
         return
 
+    # Collect message IDs buffered since last flush
+    message_ids = [row["_message_id"] for row in _minio_buffer if row.get("_message_id")]
+
     try:
+        rows: list[dict[str, Any]] = []
+
+        if message_ids:
+            conn = get_db_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT
+                            m.id,
+                            m.text         AS raw_text,
+                            m.cleaned_text,
+                            m.is_toxicity,
+                            m.is_suicide,
+                            m.source
+                        FROM messages m
+                        WHERE m.id = ANY(%s::uuid[])
+                        """,
+                        (message_ids,),
+                    )
+                    for rec in cur.fetchall():
+                        rows.append({
+                            "message_id": str(rec[0]),
+                            "raw_text": rec[1],
+                            "cleaned_text": rec[2],
+                            "is_toxicity": rec[3] or False,
+                            "is_suicide": rec[4] or False,
+                            "source": rec[5],
+                        })
+            finally:
+                conn.close()
+        else:
+            # Fallback: use buffer data (no labels available)
+            for row in _minio_buffer:
+                rows.append({
+                    "raw_text": row.get("raw_text"),
+                    "cleaned_text": row.get("cleaned_text"),
+                    "is_toxicity": False,
+                    "is_suicide": False,
+                    "source": row.get("source", "real"),
+                })
+
         client = get_minio_client()
-        lines = "\n".join(json.dumps(row) for row in _minio_buffer)
+        lines = "\n".join(json.dumps(row) for row in rows)
         data = lines.encode("utf-8")
-        object_name = f"zulip-raw-messages/cleaned/batch-{uuid.uuid4()}.jsonl"
+        object_name = f"zulip-training-data/batch-{uuid.uuid4()}.jsonl"
 
         client.put_object(
             bucket_name=config.BUCKET_RAW,
@@ -220,14 +277,14 @@ def _flush_to_minio() -> None:
             content_type="application/x-ndjson",
         )
         logger.info(
-            "Uploaded %d cleaned records to MinIO %s/%s",
-            len(_minio_buffer),
+            "Uploaded %d training records to MinIO %s/%s",
+            len(rows),
             config.BUCKET_RAW,
             object_name,
         )
         _minio_buffer.clear()
     except Exception:
-        logger.exception("Failed to flush cleaned data to MinIO")
+        logger.exception("Failed to flush training data to MinIO")
 
 
 @app.get("/", include_in_schema=False)
@@ -246,11 +303,104 @@ async def health():
     return {"status": "ok"}
 
 
+def _trigger_compile_job() -> str:
+    """Delete any existing compile-training-data job and create a fresh one."""
+    try:
+        from kubernetes import client as k8s_client, config as k8s_config
+        k8s_config.load_incluster_config()
+        batch = k8s_client.BatchV1Api()
+        namespace = "platform"
+        job_name = "compile-training-data"
+
+        # Delete existing job if present
+        try:
+            batch.delete_namespaced_job(
+                name=job_name,
+                namespace=namespace,
+                body=k8s_client.V1DeleteOptions(propagation_policy="Foreground"),
+            )
+            logger.info("Deleted existing compile job")
+        except k8s_client.exceptions.ApiException as e:
+            if e.status != 404:
+                raise
+
+        # Build job spec mirroring compile-data-job.yaml
+        env = [
+            k8s_client.V1EnvVar(
+                name="DATABASE_URL",
+                value_from=k8s_client.V1EnvVarSource(
+                    secret_key_ref=k8s_client.V1SecretKeySelector(name="chatsentry-credentials", key="DATABASE_URL")
+                ),
+            ),
+            k8s_client.V1EnvVar(name="S3_ENDPOINT", value="chi.tacc.chameleoncloud.org:7480"),
+            k8s_client.V1EnvVar(name="S3_SECURE", value="true"),
+            k8s_client.V1EnvVar(name="MINIO_ENDPOINT", value="chi.tacc.chameleoncloud.org:7480"),
+            k8s_client.V1EnvVar(
+                name="MINIO_ACCESS_KEY",
+                value_from=k8s_client.V1EnvVarSource(
+                    secret_key_ref=k8s_client.V1SecretKeySelector(name="chatsentry-credentials", key="S3_ACCESS_KEY")
+                ),
+            ),
+            k8s_client.V1EnvVar(
+                name="MINIO_SECRET_KEY",
+                value_from=k8s_client.V1EnvVarSource(
+                    secret_key_ref=k8s_client.V1SecretKeySelector(name="chatsentry-credentials", key="S3_SECRET_KEY")
+                ),
+            ),
+            k8s_client.V1EnvVar(name="MINIO_SECURE", value="true"),
+            k8s_client.V1EnvVar(name="GPU_SERVICE_URL", value="http://gpu-service.platform.svc.cluster.local:8001"),
+            k8s_client.V1EnvVar(
+                name="GPU_SERVICE_API_KEY",
+                value_from=k8s_client.V1EnvVarSource(
+                    secret_key_ref=k8s_client.V1SecretKeySelector(name="gpu-service-credentials", key="GPU_SERVICE_API_KEY")
+                ),
+            ),
+        ]
+
+        job = k8s_client.V1Job(
+            api_version="batch/v1",
+            kind="Job",
+            metadata=k8s_client.V1ObjectMeta(name=job_name, namespace=namespace),
+            spec=k8s_client.V1JobSpec(
+                backoff_limit=0,
+                ttl_seconds_after_finished=3600,
+                template=k8s_client.V1PodTemplateSpec(
+                    spec=k8s_client.V1PodSpec(
+                        restart_policy="Never",
+                        containers=[
+                            k8s_client.V1Container(
+                                name="compile",
+                                image="kichanitish/chatsentry-data:latest",
+                                image_pull_policy="Always",
+                                env=env,
+                                resources=k8s_client.V1ResourceRequirements(
+                                    requests={"cpu": "500m", "memory": "2Gi"},
+                                    limits={"cpu": "2000m", "memory": "4Gi"},
+                                ),
+                            )
+                        ],
+                    )
+                ),
+            ),
+        )
+        batch.create_namespaced_job(namespace=namespace, body=job)
+        logger.info("Triggered compile-training-data job")
+        return "triggered"
+    except Exception as e:
+        logger.warning("Could not trigger compile job: %s", e)
+        return f"skipped: {e}"
+
+
 @app.post("/admin/flush")
 async def admin_flush():
-    """Force-flush the MinIO buffer for testing."""
+    """Force-flush the MinIO buffer and trigger the training data compile job."""
     _flush_to_minio()
-    return {"status": "flushed", "buffer_remaining": len(_minio_buffer)}
+    compile_status = _trigger_compile_job()
+    return {
+        "status": "flushed",
+        "buffer_remaining": len(_minio_buffer),
+        "compile_job": compile_status,
+    }
 
 
 if __name__ == "__main__":

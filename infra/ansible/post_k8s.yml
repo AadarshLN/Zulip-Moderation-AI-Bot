@@ -208,6 +208,31 @@
       no_log: true
       changed_when: true
 
+    # grafana admin credentials (namespace platform)
+    - name: Create grafana-credentials secret (namespace platform)
+      ansible.builtin.shell: |
+        kubectl create secret generic grafana-credentials \
+          --namespace platform \
+          --from-literal=GRAFANA_ADMIN_PASSWORD="{{ vault_grafana_admin_password }}" \
+          --dry-run=client -o yaml | kubectl apply -f -
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      no_log: true
+      changed_when: true
+
+    # GPU service API key (namespace platform)
+    - name: Create gpu-service-credentials secret (namespace platform)
+      ansible.builtin.shell: |
+        kubectl create secret generic gpu-service-credentials \
+          --namespace platform \
+          --from-literal=GPU_SERVICE_API_KEY="{{ vault_gpu_service_api_key }}" \
+          --dry-run=client -o yaml | kubectl apply -f -
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      no_log: true
+      changed_when: true
+
+
     # ── Apply manifests in dependency order ──────────────────────────────────
 
     - name: Apply PostgreSQL (shared DB for Zulip + MLflow)
@@ -253,6 +278,12 @@
         KUBECONFIG: "{{ kubeconfig }}"
       changed_when: true
 
+    - name: Apply ChatSentry RBAC (ServiceAccount + Role for job management)
+      ansible.builtin.shell: kubectl apply -f {{ manifest_dest }}/platform/chatsentry-rbac.yaml
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      changed_when: true
+
     - name: Apply ChatSentry API
       ansible.builtin.shell: kubectl apply -f {{ manifest_dest }}/platform/chatsentry.yaml
       environment:
@@ -261,6 +292,37 @@
 
     - name: Apply Inference Service
       ansible.builtin.shell: kubectl apply -f {{ manifest_dest }}/platform/inference.yaml
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      changed_when: true
+
+    - name: Apply GE Viewer
+      ansible.builtin.shell: kubectl apply -f {{ manifest_dest }}/platform/ge-viewer.yaml
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      changed_when: true
+
+    - name: Apply GPU Service
+      ansible.builtin.shell: kubectl apply -f {{ manifest_dest }}/platform/gpu-service.yaml
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      changed_when: true
+
+
+    - name: Apply Prometheus
+      ansible.builtin.shell: kubectl apply -f {{ manifest_dest }}/platform/prometheus.yaml
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      changed_when: true
+
+    - name: Apply Grafana
+      ansible.builtin.shell: kubectl apply -f {{ manifest_dest }}/platform/grafana.yaml
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      changed_when: true
+
+    - name: Apply cAdvisor
+      ansible.builtin.shell: kubectl apply -f {{ manifest_dest }}/platform/cadvisor.yaml
       environment:
         KUBECONFIG: "{{ kubeconfig }}"
       changed_when: true
@@ -308,13 +370,74 @@
         KUBECONFIG: "{{ kubeconfig }}"
       changed_when: true
 
-    - name: Apply training job ConfigMap and PVC (Job itself is triggered manually)
-      ansible.builtin.shell: |
-        kubectl apply -f {{ manifest_dest }}/platform/training-job.yaml \
-          --selector='!batch.kubernetes.io/job-name'
+    - name: Apply training CronJob (runs daily at 1 AM UTC)
+      ansible.builtin.shell: kubectl apply -f {{ manifest_dest }}/platform/training-cronjob.yaml
       environment:
         KUBECONFIG: "{{ kubeconfig }}"
       changed_when: true
+
+# ── GPU node: rclone setup ───────────────────────────────────────────────────
+- name: Set up training pipeline on GPU node
+  hosts: k3s_agent
+  become: false
+  gather_facts: false
+
+  vars:
+    repo_dir: /home/cc/Zulip-Moderation-AI-Bot
+
+  tasks:
+
+    - name: Sync repo to GPU node
+      ansible.posix.synchronize:
+        src: "{{ playbook_dir }}/../../"
+        dest: "{{ repo_dir }}/"
+        rsync_opts:
+          - "--exclude=.git"
+          - "--exclude=tmp/"
+          - "--exclude=tmp2/"
+          - "--exclude=__pycache__/"
+          - "--exclude=*.pyc"
+          - "--exclude=retraining-data/"
+          - "--exclude=checkpoints/"
+          - "--exclude=outputs/"
+
+    - name: Install rclone (if not present)
+      ansible.builtin.shell: |
+        curl https://rclone.org/install.sh | sudo bash
+      args:
+        creates: /usr/bin/rclone
+
+    - name: Create rclone config directory
+      ansible.builtin.file:
+        path: /home/cc/.config/rclone
+        state: directory
+        mode: "0700"
+
+    - name: Write rclone config for Chameleon S3
+      ansible.builtin.copy:
+        dest: /home/cc/.config/rclone/rclone.conf
+        mode: "0600"
+        content: |
+          [rclone_s3]
+          type = s3
+          provider = Ceph
+          env_auth = false
+          access_key_id = {{ vault_chameleon_ec2_access }}
+          secret_access_key = {{ vault_chameleon_ec2_secret }}
+          endpoint = chi.tacc.chameleoncloud.org:7480
+          no_check_bucket = true
+
+
+# ── Remaining k3s_server tasks ────────────────────────────────────────────────
+- name: Health checks and post-deploy steps
+  hosts: k3s_server
+  become: false
+  gather_facts: true
+  vars:
+    kubeconfig: /home/cc/.kube/config
+    manifest_dest: /home/cc/k8s
+
+  tasks:
 
     # ── Health checks ────────────────────────────────────────────────────────
 
@@ -390,3 +513,5 @@
           - "RabbitMQ:   http://rabbitmq.{{ ansible_host }}.nip.io"
           - "Adminer:    http://adminer.{{ ansible_host }}.nip.io  (postgres UI — server: postgres.zulip.svc.cluster.local)"
           - "ChatSentry: http://chatsentry.{{ ansible_host }}.nip.io"
+          - "Prometheus: http://prometheus.{{ ansible_host }}.nip.io"
+          - "Grafana:    http://grafana.{{ ansible_host }}.nip.io  (user: admin / password: vault_grafana_admin_password)"

@@ -1,0 +1,23 @@
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# Install data pipeline dependencies (no GPU needed)
+RUN pip install --no-cache-dir \
+    minio>=7.2.0 \
+    psycopg2-binary>=2.9.0 \
+    pandas>=2.0.0 \
+    scikit-learn>=1.6.0 \
+    "great-expectations>=1.15.2" \
+    pyyaml>=6.0.0 \
+    python-dotenv>=1.2.0 \
+    ftfy>=6.3.1 \
+    emoji>=2.15.0 \
+    markdownify>=1.2.2 \
+    requests>=2.32.0
+
+# Copy source and config (pipeline.yaml loaded by src/utils/config.py)
+COPY src/ ./src/
+COPY config/ ./config/
+
+CMD ["python", "-m", "src.data.compile_training_data"]

@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ge-viewer
+  namespace: platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ge-viewer
+  template:
+    metadata:
+      labels:
+        app: ge-viewer
+    spec:
+      containers:
+        - name: ge-viewer
+          image: kichanitish/ge-viewer:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+          env:
+            - name: S3_ENDPOINT
+              value: "chi.tacc.chameleoncloud.org:7480"
+            - name: S3_SECURE
+              value: "true"
+            - name: MINIO_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: chatsentry-credentials
+                  key: S3_ACCESS_KEY
+            - name: MINIO_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: chatsentry-credentials
+                  key: S3_SECRET_KEY
+            - name: BUCKET_TRAINING
+              value: "proj09_Data"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ge-viewer
+  namespace: platform
+spec:
+  selector:
+    app: ge-viewer
+  ports:
+    - port: 8080
+      targetPort: 8080

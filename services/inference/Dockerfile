@@ -6,7 +6,9 @@ WORKDIR /app
 # NOTE: For GPU inference on AMD ROCm nodes, replace the torch install with:
 #   pip install torch --index-url https://download.pytorch.org/whl/rocm6.0
 # The current setup runs on CPU with INT8 quantization.
-RUN pip install --no-cache-dir fastapi uvicorn torch transformers pyyaml
+RUN pip install --no-cache-dir fastapi uvicorn torch transformers pyyaml \
+    prometheus-fastapi-instrumentator prometheus-client \
+    psycopg2-binary minio mlflow
 
 # Copy app and config
 COPY main.py .
