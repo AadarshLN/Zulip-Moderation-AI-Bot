@@ -508,10 +508,11 @@
     - name: Print access URLs
       ansible.builtin.debug:
         msg:
-          - "Zulip:      https://zulip.{{ ansible_host }}.nip.io  (self-signed cert — click Advanced > Proceed)"
+          - "Zulip:      https://zulip.{{ ansible_host }}.nip.io"
           - "MLflow:     http://mlflow.{{ ansible_host }}.nip.io"
           - "RabbitMQ:   http://rabbitmq.{{ ansible_host }}.nip.io"
-          - "Adminer:    http://adminer.{{ ansible_host }}.nip.io  (postgres UI — server: postgres.zulip.svc.cluster.local)"
+          - "Adminer:    http://adminer.{{ ansible_host }}.nip.io"
           - "ChatSentry: http://chatsentry.{{ ansible_host }}.nip.io"
           - "Prometheus: http://prometheus.{{ ansible_host }}.nip.io"
-          - "Grafana:    http://grafana.{{ ansible_host }}.nip.io  (user: admin / password: vault_grafana_admin_password)"
+          - "Grafana:    http://grafana.{{ ansible_host }}.nip.io"
+          - "GE Viewer:  http://ge-viewer.{{ ansible_host }}.nip.io"
