@@ -47,7 +47,7 @@ services:
   ge-viewer:
     build:
       context: ..
-      dockerfile: docker/ge-viewer/Dockerfile
+      dockerfile: services/ge-viewer/Dockerfile
     container_name: ge-viewer
     dns:
       - 8.8.8.8

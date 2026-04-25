@@ -24,7 +24,7 @@ pip install python-openstackclient
 
 Docker Desktop must be installed and running. All images must be built for `linux/amd64` since the cluster runs on AMD64 hardware (Mac is ARM64).
 
-Build and push all three service images before running Ansible:
+Build and push all service images before running Ansible:
 
 ```bash
 # ChatSentry API
@@ -39,8 +39,16 @@ docker buildx build --platform linux/amd64 -t kichanitish/inference:latest --pus
 cd services/zulip-bot
 docker buildx build --platform linux/amd64 -t kichanitish/zulip-moderation-bot:latest --push .
 
-# Trainer (ROCm/AMD — use Dockerfile.training at repo root, NOT train/Dockerfile)
+# GE Viewer (Great Expectations report viewer)
+cd services/ge-viewer
+docker buildx build --platform linux/amd64 -t kichanitish/ge-viewer:latest --push .
+
+# GPU Service (runs on AMD ROCm GPU node)
 cd ../..
+docker buildx build --platform linux/amd64 -f Dockerfile.gpu-service \
+  -t kichanitish/gpu-service:latest --push .
+
+# Trainer (ROCm/AMD — use Dockerfile.training at repo root, NOT train/Dockerfile)
 docker buildx build --platform linux/amd64 -f Dockerfile.training \
   -t kichanitish/zulip-moderation-trainer:latest --push .
 ```
@@ -60,14 +68,14 @@ If named differently, update the `key` variable in Terraform.
 
 Place it at `~/.config/openstack/clouds.yaml`.
 
-**EC2 credentials** — needed for object store access (MLflow artifacts + Zulip uploads):
+**EC2 credentials** — needed for object store access (MLflow artifacts, training data, model checkpoints):
 > Identity → EC2 Credentials → Create EC2 Credential
 
 Note the Access Key and Secret Key — you'll enter them in the vault in Phase 2.
 
 ---
 
-## Phase 1 — Terraform (provision the VM)
+## Phase 1 — Terraform (provision the VMs)
 
 Run from `infra/terraform/` on your local machine.
 
@@ -76,12 +84,15 @@ Run from `infra/terraform/` on your local machine.
 ```bash
 cd infra/terraform
 cat > terraform.tfvars <<EOF
-suffix         = "proj09"
-reservation_id = "YOUR_RESERVATION_UUID"
+suffix             = "proj09"
+reservation_id     = "YOUR_GPU_RESERVATION_UUID"
+app_reservation_id = "YOUR_APP_RESERVATION_UUID"
 EOF
 ```
 
-Find your reservation UUID on the Chameleon dashboard under Reservations.
+Find both reservation UUIDs on the Chameleon dashboard under Reservations:
+- `reservation_id` — CHI@TACC bare-metal reservation for the GPU node
+- `app_reservation_id` — KVM@TACC reservation for the app node
 
 ### 1.2 Initialize and apply
 
@@ -90,6 +101,10 @@ terraform init
 terraform plan    # review what will be created
 terraform apply   # will prompt for confirmation
 ```
+
+This provisions two nodes:
+- **app-node** (KVM@TACC): runs all platform services (k3s control plane + worker)
+- **gpu-node** (CHI@TACC bare metal): AMD MI100 GPU, k3s agent, runs training jobs only
 
 ### 1.3 Export node IPs
 
@@ -122,23 +137,24 @@ nano group_vars/all/vault.yml
 
 Key values to fill in:
 
-| Variable | How to get it |
-|---|---|
-| `vault_zulip_secret_key` | `python3 -c "import secrets; print(secrets.token_hex(32))"` |
-| `vault_zulip_admin_email` | Your email address |
-| `vault_zulip_admin_password` | Choose a strong password |
-| `vault_chameleon_ec2_access` | EC2 Access Key from Chameleon dashboard |
-| `vault_chameleon_ec2_secret` | EC2 Secret Key from Chameleon dashboard |
-| `vault_postgres_password` | Choose a strong password |
-| `vault_rabbitmq_password` | Choose a strong password |
-| `vault_redis_password` | Choose a strong password |
-| `vault_mlflow_db_password` | Choose a strong password |
-| `vault_chatsentry_db_password` | Choose a strong password |
-| `vault_zulip_bot_email` | Fill in after Phase 4.1 (Zulip bot creation) |
-| `vault_zulip_bot_api_key` | Fill in after Phase 4.1 (Zulip bot creation) |
-| `vault_google_oauth2_key` | Google OAuth Client ID — see Phase 4.2 |
-| `vault_google_oauth2_secret` | Google OAuth Client Secret — see Phase 4.2 |
-| `vault_grafana_admin_password` | Choose a strong password |
+| Variable | Username | How to get it |
+|---|---|---|
+| `vault_zulip_secret_key` | — | `python3 -c "import secrets; print(secrets.token_hex(32))"` |
+| `vault_zulip_admin_email` | — | Your email address |
+| `vault_zulip_admin_password` | — | Choose a strong password |
+| `vault_chameleon_ec2_access` | — | EC2 Access Key — Chameleon dashboard: Identity → EC2 Credentials → Create |
+| `vault_chameleon_ec2_secret` | — | EC2 Secret Key — same as above |
+| `vault_postgres_password` | `zulip` | Password for the Zulip PostgreSQL user (database: `zulip`) |
+| `vault_mlflow_db_password` | `mlflow_user` | Password for the MLflow PostgreSQL user (database: `mlflow`) |
+| `vault_chatsentry_db_password` | `chatsentry_user` | Password for the ChatSentry PostgreSQL user (database: `chatsentry`) |
+| `vault_rabbitmq_password` | `zulip` | Password for the RabbitMQ `zulip` vhost user |
+| `vault_redis_password` | — | Choose a strong password |
+| `vault_grafana_admin_password` | `admin` | Grafana admin password |
+| `vault_gpu_service_api_key` | — | `python3 -c "import secrets; print(secrets.token_hex(32))"` — authenticates data pipeline → GPU service |
+| `vault_zulip_bot_email` | — | Fill in after Phase 4.2 (Zulip bot creation) |
+| `vault_zulip_bot_api_key` | — | Fill in after Phase 4.2 (Zulip bot creation) |
+| `vault_google_oauth2_key` | — | Google OAuth Client ID — console.cloud.google.com → APIs & Services → Credentials |
+| `vault_google_oauth2_secret` | — | Google OAuth Client Secret — same as above. Redirect URI: `https://zulip.<IP>.nip.io/complete/google/` |
 
 **Note:** `vault_zulip_bot_email` and `vault_zulip_bot_api_key` are obtained from the Zulip UI after the realm is created. Leave them as placeholders for now and fill them in before running `post_k8s.yml`.
 
@@ -155,7 +171,7 @@ chmod 600 ~/.vault_pass
 
 ---
 
-## Phase 3 — Ansible (configure and deploy)
+## Phase 3 — Ansible (configure nodes and deploy)
 
 All commands run from `infra/ansible/` on your local machine.
 
@@ -171,7 +187,7 @@ ansible-playbook -i inventory.yml pre_k8s.yml \
 ### 3.2 Install k3s
 
 Three plays in sequence:
-1. Install k3s server on app-node (control plane)
+1. Install k3s server on app-node (control plane + worker)
 2. Configure AMD ROCm containerd runtime and join GPU node as agent
 3. Apply node labels/taints, deploy AMD GPU device plugin, deploy nginx-ingress pinned to app-node
 
@@ -192,7 +208,7 @@ Expected: two nodes in `Ready` state — `app-node-proj09` (control-plane) and `
 
 ## Phase 4 — Zulip bot setup (one-time, before post_k8s)
 
-The Zulip bot credentials must exist before deploying services. This is a two-step process: deploy Zulip first, create the bot, then deploy everything else.
+The Zulip bot credentials must exist before deploying all services. This is a two-step process: deploy Zulip first, create the bot, then fill in credentials and deploy everything else.
 
 ### 4.1 Deploy Zulip only (first-time)
 
@@ -253,25 +269,26 @@ ansible-playbook -i inventory.yml post_k8s.yml \
 ```
 
 This playbook:
-- Creates Chameleon Swift object store containers (runs locally)
-- Copies all k8s manifests to the VM
+- Creates Chameleon Swift object store containers (`proj09_object_store`, `proj09_Data`) if they don't exist
+- Copies all k8s manifests to the VM at `~/k8s/`
 - Substitutes the floating IP placeholder in all manifests
 - Creates all k8s secrets from vault values
 - Deploys all services in dependency order
 - Generates a self-signed TLS cert for the Zulip HTTPS ingress
-- Prints access URLs and realm creation link (first deploy only)
+- Prints access URLs at the end
 
 **Access URLs** (printed at end of playbook):
 
 | Service | URL | Notes |
 |---|---|---|
 | Zulip | `https://zulip.<IP>.nip.io` | Self-signed cert — click Advanced → Proceed |
-| MLflow | `http://mlflow.<IP>.nip.io` | |
-| RabbitMQ | `http://rabbitmq.<IP>.nip.io` | |
-| Adminer | `http://adminer.<IP>.nip.io` | Postgres UI |
-| ChatSentry | `http://chatsentry.<IP>.nip.io` | |
-| Prometheus | `http://prometheus.<IP>.nip.io` | |
-| Grafana | `http://grafana.<IP>.nip.io` | user: `admin` / password: `vault_grafana_admin_password` |
+| MLflow | `http://mlflow.<IP>.nip.io` | Experiment tracking |
+| RabbitMQ | `http://rabbitmq.<IP>.nip.io` | Management UI |
+| Adminer | `http://adminer.<IP>.nip.io` | PostgreSQL web UI |
+| ChatSentry | `http://chatsentry.<IP>.nip.io` | Moderation dashboard |
+| Prometheus | `http://prometheus.<IP>.nip.io` | Metrics explorer |
+| Grafana | `http://grafana.<IP>.nip.io` | `admin` / `vault_grafana_admin_password` |
+| GE Viewer | `http://ge-viewer.<IP>.nip.io` | Data quality reports |
 
 **Adminer login:**
 - Server: `postgres.zulip.svc.cluster.local`
@@ -310,38 +327,39 @@ kubectl exec -n zulip deploy/postgres -- psql -U zulip -d chatsentry \
 
 Verify monitoring stack:
 ```bash
-kubectl get pods -n platform | grep -E 'prometheus|grafana|cadvisor'
+kubectl get pods -n platform | grep -E 'prometheus|grafana|node-exporter|kube-state-metrics'
 ```
 
-All three should be `Running`. Then open Grafana at `http://grafana.<IP>.nip.io` and:
-1. Log in with `admin` / `vault_grafana_admin_password`
-2. Go to **Dashboards → Import** → enter ID `19908` (cAdvisor — container resource usage)
-3. Select the Prometheus datasource and click **Import**
+All should be `Running`. Open Grafana at `http://grafana.<IP>.nip.io` and navigate to **Dashboards → ChatSentry Platform** — this is the pre-built dashboard showing:
+- Service health (all pods UP/DOWN)
+- Moderation request rate and action breakdown
+- Inference latency percentiles (p50/p95/p99)
+- Toxicity and self-harm score distributions
+- Node CPU, memory, and disk usage for both nodes
+- Training job status
 
-The inference and ChatSentry services expose metrics at `/metrics`. Prometheus scrapes them every 15s. Available custom metrics:
-- `inference_toxicity_score` — histogram of toxicity scores
-- `inference_self_harm_score` — histogram of self-harm scores
-- `inference_action_total` — counter of moderation actions (ALLOW / FLAG / DELETE) by label
+The inference service exposes the following custom Prometheus metrics:
+- `inference_toxicity_score` — histogram of toxicity scores per request
+- `inference_self_harm_score` — histogram of self-harm scores per request
+- `inference_action_total{action="ALLOW|WARN_AND_OBSCURE|HIDE_AND_STRIKE|ALERT_ADMIN"}` — counter of moderation decisions
 - `inference_latency_ms` — model inference latency histogram
 
 ---
 
-## Phase 7 — Run the training job
+## Phase 7 — Training pipeline
 
-### 7.1 Build and push the trainer image
+### 7.1 How training works
 
-From the repo root (use `Dockerfile.training` — it targets ROCm/AMD, not NVIDIA CUDA):
+Training runs on the GPU node via a Kubernetes CronJob (`training-cronjob.yaml`) that fires daily at 01:00 UTC. The CronJob uses `nsenter` to break into the host network namespace and run `scripts/retrain_latest.sh` as the `cc` user directly on the GPU node. This is necessary because AMD ROCm GPU passthrough works with Docker's `--device` flags but not through Kubernetes containerd.
 
-```bash
-docker buildx build --platform linux/amd64 \
-  -f Dockerfile.training \
-  -t kichanitish/zulip-moderation-trainer:latest \
-  --push .
-```
+The script:
+1. Finds the latest versioned dataset folder in `rclone_s3:proj09_Data/zulip-training-data/`
+2. Downloads it locally to the GPU node
+3. Pulls the trainer Docker image
+4. Runs `docker run` with `--device=/dev/kfd --device=/dev/dri` for AMD GPU access
+5. On success + quality gate pass: uploads `best_model.pt` to `rclone_s3:proj09_object_store/`
 
 ### 7.2 Upload training data to Chameleon S3
-
-The training job automatically downloads the latest versioned dataset from Chameleon S3 at job start. Upload your splits before triggering the job.
 
 Each CSV must have columns: `text`, `is_suicide`, `is_toxicity`.
 
@@ -358,29 +376,39 @@ for f in train.csv val.csv test.csv; do
 done
 ```
 
-The job's init container will find the latest `v*` folder and download it automatically.
-
-### 7.3 Submit the training job
+### 7.3 Trigger a manual training run
 
 ```bash
 ssh -i ~/.ssh/id_rsa_chameleon cc@$APP_NODE_IP
-kubectl apply -f ~/k8s/platform/training-job.yaml
+kubectl create job --from=cronjob/training-cronjob manual-training-$(date +%s) -n platform
 ```
 
 ### 7.4 Monitor the job
 
 ```bash
 kubectl get pods -n platform -w
-kubectl logs -n platform -l job-name=zulip-moderation-training -f
+kubectl logs -n platform -l job-name=<job-name> -f
 ```
 
-### 7.5 Re-run the job
+For detailed GPU utilisation, SSH to the GPU node:
+```bash
+ssh -i ~/.ssh/id_rsa_chameleon cc@$GPU_NODE_IP
+rocm-smi
+```
 
-Kubernetes Jobs are immutable after completion. To re-run:
+### 7.5 Automatic model promotion
+
+The `inference-monitor` CronJob runs every 30 minutes. It:
+- Checks if `best_model.pt` in S3 is newer than what the inference pod has loaded → triggers a rolling restart to pick up the new weights
+- Checks for score drift (24h avg confidence > 10 points above all-time baseline) or excessive ALLOW rate (>95%) → rolls back to `best_model_backup.pt`
+
+No manual steps are needed after a successful training run — the inference pod will automatically reload the new model within 30 minutes.
+
+### 7.6 Re-run a failed job
 
 ```bash
-kubectl delete job zulip-moderation-training -n platform
-kubectl apply -f ~/k8s/platform/training-job.yaml
+kubectl delete job <job-name> -n platform
+kubectl create job --from=cronjob/training-cronjob manual-training-$(date +%s) -n platform
 ```
 
 ---
@@ -398,6 +426,7 @@ nano terraform.tfvars
 terraform apply
 
 export APP_NODE_IP=$(terraform output -raw app_node_floating_ip)
+export GPU_NODE_IP=$(terraform output -raw gpu_node_floating_ip)
 
 cd ../ansible
 ansible-playbook -i inventory.yml pre_k8s.yml --vault-password-file ~/.vault_pass
@@ -409,7 +438,7 @@ ansible-playbook -i inventory.yml post_k8s.yml --vault-password-file ~/.vault_pa
 
 The Cinder volume persists across redeployments (`prevent_destroy = true` in Terraform) — all PostgreSQL data, MLflow artifacts, and PVC data survive.
 
-**Note:** After redeployment the bot credentials stay the same (stored in vault), but the `#moderation` stream and bot moderator role must already exist in the persisted Zulip data — no manual steps needed on redeployment.
+**Note:** After redeployment the bot credentials stay the same (stored in vault), but the `#moderation` stream and bot moderator role must already exist in the persisted Zulip data — no manual steps needed on redeployment. rclone is installed and configured automatically by `post_k8s.yml`.
 
 ---
 
@@ -429,6 +458,15 @@ kubectl logs -n zulip deploy/zulip -f
 kubectl get pods -n kube-system | grep amdgpu
 kubectl describe node gpu-node-proj09 | grep amd
 ```
+
+**Training job stuck / not using GPU** — SSH to the GPU node and check running Docker containers:
+```bash
+ssh -i ~/.ssh/id_rsa_chameleon cc@$GPU_NODE_IP
+sudo docker ps
+rocm-smi   # GPU utilisation should be ~100% during training
+```
+
+**rclone: remote not configured** — re-run `post_k8s.yml`. It installs rclone and writes the config from vault credentials automatically.
 
 **Re-check all pod status:**
 ```bash
