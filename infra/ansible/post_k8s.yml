@@ -392,7 +392,6 @@
         src: "{{ playbook_dir }}/../../"
         dest: "{{ repo_dir }}/"
         rsync_opts:
-          - "--exclude=.git"
           - "--exclude=tmp/"
           - "--exclude=tmp2/"
           - "--exclude=__pycache__/"

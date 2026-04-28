@@ -35,6 +35,18 @@ def passes_quality_gates(test_metrics: dict):
     suicide = test_metrics["suicide"]
     toxicity = test_metrics["toxicity"]
 
+    for task_name, metrics in [("suicide", suicide), ("toxicity", toxicity)]:
+      suspicious_metrics = ["accuracy", "precision", "recall", "f1"]
+      perfect = [
+         m for m in suspicious_metrics
+         if m in metrics and metrics[m] > 0.9999
+      ]
+
+      if len(perfect) >= 3:
+         reasons.append(
+           f"{task_name} has suspicious near-perfect metrics: {perfect}. "
+         )
+
     # Self-harm / suicide: prioritize recall
     if suicide["recall"] < 0.85:
         reasons.append(f"suicide recall too low: {suicide['recall']:.4f} < 0.85")
@@ -414,9 +426,9 @@ def run_transformer(cfg):
             val_metrics, _, _ = evaluate_transformer(model, val_loader, device, {"suicide": 0.5, "toxicity": 0.5})
 
             # flat_val = {f"val_{k}": v for k, v in flatten_metrics(val_metrics).items()}
-            for k, v in flatten_metrics(val_metrics).items():
-                if v is not None and not np.isnan(v):
-                    mlflow.log_metric(f"val_{k}", float(v), step=epoch)
+            #for k, v in flatten_metrics(val_metrics).items():
+            #    if v is not None and not np.isnan(v):
+            #        mlflow.log_metric(f"val_{k}", float(v), step=epoch)
             if val_metrics["avg_f1"] > best_val_f1:
                 best_val_f1 = val_metrics["avg_f1"]
                 torch.save(model.state_dict(), best_model_path)
@@ -485,7 +497,8 @@ def main():
             model, train_time, thresholds, val_metrics, test_metrics, best_model_path = run_transformer(cfg)
 
         passed_gate, gate_reasons = passes_quality_gates(test_metrics)
-        mlflow.log_param("quality_gate_passed", passed_gate)
+        #mlflow.log_param("quality_gate_passed", passed_gate)
+        mlflow.log_metric("gate_passed", int(passed_gate))
         mlflow.set_tag("quality_gate_passed", str(passed_gate).lower())
 
         if gate_reasons:
@@ -500,9 +513,22 @@ def main():
             print(f"Model saved locally at: {best_model_path}")
 
         # mlflow.log_metric({f"test_{k}": v for k, v in flatten_metrics(test_metrics).items()})
-        for k, v in flatten_metrics(test_metrics).items():
-            if v is not None and not np.isnan(v):
-                mlflow.log_metric(f"test_{k}", float(v))
+        GATING_METRICS = {
+          "suicide": ["recall", "f1", "precision"],
+          "toxicity": ["f1", "precision", "recall"],
+        }
+
+        #for k, v in flatten_metrics(test_metrics).items():
+        #    if v is not None and not np.isnan(v):
+        #        mlflow.log_metric(f"test_{k}", float(v))
+
+
+        for task, metric_names in GATING_METRICS.items():
+            for metric_name in metric_names:
+                value = test_metrics[task][metric_name]
+                if value is not None and not np.isnan(value):
+                  mlflow.log_metric(f"gate_{task}_{metric_name}", float(value))
+
 
         Path(cfg["output"]["dir"]).mkdir(parents=True, exist_ok=True)
         thresholds_path = Path(cfg["output"]["dir"]) / "thresholds.json"
