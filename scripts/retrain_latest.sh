@@ -92,7 +92,7 @@ sudo docker run --rm \
   -v "$LOCAL_DATA_ROOT:/workspace/retraining-data" \
   -v "$LOCAL_CKPT_DIR:/workspace/checkpoints" \
   -v "$REPO_ROOT/outputs:/workspace/outputs" \
-  -e GIT_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)" \
+  -e GIT_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo 'unknown')" \
   -e MLFLOW_TRACKING_URI="$MLFLOW_URI" \
   -e RESUME_FROM_CHECKPOINT="/workspace/checkpoints/best_model.pt" \
   "$IMAGE_NAME" \
